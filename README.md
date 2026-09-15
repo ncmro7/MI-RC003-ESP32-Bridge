@@ -79,7 +79,15 @@ USB 复合设备包含 4 个接口：
 
 ## 3. 硬件要求
 
-* **ESP32-S3 开发板**（推荐 16MB Flash + 8MB PSRAM，如 N16R8；4MB 版本需调整分区表）。
+* **ESP32-S3-WROOM-1 开发板**，支持以下板型：
+
+  | 板型 | Flash | PSRAM | 固件构建 profile |
+  | :--- | :--- | :--- | :--- |
+  | N16R8（推荐） | 16MB | 8MB Octal | `n16r8` |
+  | N8R2 | 8MB | 2MB Quad | `n8r2` |
+  | N4R2 | 4MB | 2MB Quad | `n4r2` |
+
+  请使用与板型匹配的 profile 编译和烧录。N4R2 的应用分区为 2.75MB；若今后固件超过该大小，需先精简功能或调整分区表。
 * 板载 WS2812 RGB 指示灯（默认 GPIO48，可在 `main/app_config.h` 修改 `RGB_BUILTIN`）。
 * **小米蓝牙语音遥控器 2 Pro（型号 RC003）**。
 * 两根 Type-C 数据线（或一根）：一根接 **USB/OTG** 口（必须，用于复合设备与 WebUSB），
@@ -232,9 +240,26 @@ HTML/JS 调用该 API，完全替换默认 UI。完整 API 参考见
 
 ```powershell
 idf.py set-target esp32s3   # 首次 / 更换硬件
+
+# N16R8（默认）
 idf.py build
+
+# N8R2 / N4R2：通过 CMake 参数指定基础配置及板型覆盖
+idf.py -D "SDKCONFIG=.sdkconfig.n8r2" -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.n8r2" build
+idf.py -D "SDKCONFIG=.sdkconfig.n4r2" -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.n4r2" build
+
 idf.py -p COMx flash monitor
 ```
+
+也可使用一键发布脚本选择板型（默认 `n16r8`）：
+
+```bat
+build-firmware.bat -Profile n16r8
+build-firmware.bat -Profile n8r2
+build-firmware.bat -Profile n4r2
+```
+
+每次切换 profile 后，请重新执行 `idf.py build`；烧录工具与网页烧录目录会保存本次构建对应的固件。
 
 ---
 

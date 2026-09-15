@@ -1,7 +1,9 @@
 # ESP-IDF build output
 build/
+build-*/
 sdkconfig
 sdkconfig.old
+.sdkconfig.*
 managed_components/
 
 # IDE
