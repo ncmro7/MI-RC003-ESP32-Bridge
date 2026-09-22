@@ -81,7 +81,7 @@ const uint16_t usb_hid_report_descriptor_len = sizeof(usb_hid_report_descriptor)
 const uint8_t usb_config_descriptor[] = {
     // Configuration number, interface count, string index, total length, attributes, power (mA)
     TUD_CONFIG_DESCRIPTOR(1, 4, 0, USB_CONFIG_TOTAL_LEN,
-                          TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+                          0, 100),
 
     // -------------------- UAC 1.0 microphone (108 bytes) --------------------
     // 1. IAD (bFirstInterface=0, bInterfaceCount=2, audio, iFunction=6)

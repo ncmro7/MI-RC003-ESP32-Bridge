@@ -17,6 +17,11 @@
 
 static SemaphoreHandle_t s_hid_mutex = NULL;
 static uint8_t s_mouse_buttons = 0;
+static volatile bool s_transport_enabled = false;
+static volatile bool s_keyboard_release_pending = false;
+static volatile bool s_consumer_release_pending = false;
+static volatile bool s_mouse_release_pending = false;
+static bool s_release_task_started = false;
 
 // Real HID output state, used to drive the LED (yellow while the host is
 // receiving a pressed key/button, cleared on release).
@@ -45,24 +50,65 @@ static void hid_unlock(void)
     }
 }
 
+static void hid_release_retry_task(void *arg)
+{
+    (void)arg;
+
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+        if (!s_transport_enabled || tud_suspended()) {
+            continue;
+        }
+
+        // All reports share one HID IN endpoint, so submit at most one report
+        // per pass and wait for the host to consume it before the next one.
+        if (s_keyboard_release_pending) {
+            usb_hid_keyboard_release();
+        } else if (s_consumer_release_pending) {
+            usb_hid_consumer_release();
+        } else if (s_mouse_release_pending) {
+            usb_hid_mouse_buttons_release();
+        }
+    }
+}
+
 void hid_bridge_init(void)
 {
     if (!s_hid_mutex) {
         s_hid_mutex = xSemaphoreCreateMutex();
     }
+    if (!s_release_task_started) {
+        s_release_task_started =
+            xTaskCreatePinnedToCore(hid_release_retry_task, "hid_release", 2048,
+                                    NULL, PRIO_TASK_USB, NULL,
+                                    TASK_CORE_USB) == pdPASS;
+    }
+}
+
+void hid_bridge_set_transport_enabled(bool enabled)
+{
+    hid_lock();
+    s_transport_enabled = enabled;
+    if (!enabled) {
+        s_keyboard_pressed = false;
+        s_consumer_pressed = false;
+        s_mouse_buttons = 0;
+        update_hid_led();
+    }
+    hid_unlock();
+}
+
+static bool hid_prepare_report(void)
+{
+    return s_transport_enabled && !tud_suspended() && tud_hid_ready();
 }
 
 bool usb_hid_keyboard_press(uint8_t modifier, uint8_t keycode)
 {
-    if (!tud_hid_ready()) {
+    if (!hid_prepare_report()) {
         return false;
     }
     hid_lock();
-
-    if (tud_suspended()) {
-        tud_remote_wakeup();
-        vTaskDelay(pdMS_TO_TICKS(15));
-    }
 
     // HID usages 0xE0..0xE7 are modifiers and must go in the modifier byte,
     // not the 6-key rollover array. This keeps legacy keymaps (where a
@@ -75,12 +121,18 @@ bool usb_hid_keyboard_press(uint8_t modifier, uint8_t keycode)
     hid_keyboard_report_t report = {0};
     report.modifier = modifier;
     report.keycode[0] = keycode;
-    tud_hid_n_report(0, HID_REPORT_ID_KEYBOARD, &report, sizeof(report));
+    bool ok = tud_hid_n_report(0, HID_REPORT_ID_KEYBOARD, &report, sizeof(report));
+    if (!ok) {
+        app_log("USB_HID", "Keyboard report rejected");
+    }
+    if (ok) {
+        s_keyboard_release_pending = false;
+    }
     s_keyboard_pressed = (modifier != 0 || keycode != 0);
     update_hid_led();
 
     hid_unlock();
-    return true;
+    return ok;
 }
 
 bool usb_hid_keyboard_release(void)
@@ -93,11 +145,11 @@ bool usb_hid_keyboard_release(void)
     update_hid_led();
 
     bool ok = false;
-    if (tud_hid_ready()) {
+    if (s_transport_enabled && !tud_suspended() && tud_hid_ready()) {
         hid_keyboard_report_t report = {0};
-        tud_hid_n_report(0, HID_REPORT_ID_KEYBOARD, &report, sizeof(report));
-        ok = true;
+        ok = tud_hid_n_report(0, HID_REPORT_ID_KEYBOARD, &report, sizeof(report));
     }
+    s_keyboard_release_pending = !ok;
 
     hid_unlock();
     return ok;
@@ -115,23 +167,24 @@ bool usb_hid_keyboard_tap(uint8_t modifier, uint8_t keycode)
 
 bool usb_hid_consumer_press(uint16_t usage_code)
 {
-    if (!tud_hid_ready()) {
+    if (!hid_prepare_report()) {
         return false;
     }
     hid_lock();
 
-    if (tud_suspended()) {
-        tud_remote_wakeup();
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-
     uint8_t report[2] = { (uint8_t)(usage_code & 0xFF), (uint8_t)(usage_code >> 8) };
-    tud_hid_n_report(0, HID_REPORT_ID_CONSUMER, report, sizeof(report));
+    bool ok = tud_hid_n_report(0, HID_REPORT_ID_CONSUMER, report, sizeof(report));
+    if (!ok) {
+        app_log("USB_HID", "Consumer report rejected");
+    }
+    if (ok) {
+        s_consumer_release_pending = false;
+    }
     s_consumer_pressed = (usage_code != 0);
     update_hid_led();
 
     hid_unlock();
-    return true;
+    return ok;
 }
 
 bool usb_hid_consumer_release(void)
@@ -142,11 +195,11 @@ bool usb_hid_consumer_release(void)
     update_hid_led();
 
     bool ok = false;
-    if (tud_hid_ready()) {
+    if (s_transport_enabled && !tud_suspended() && tud_hid_ready()) {
         uint8_t report[2] = {0, 0};
-        tud_hid_n_report(0, HID_REPORT_ID_CONSUMER, report, sizeof(report));
-        ok = true;
+        ok = tud_hid_n_report(0, HID_REPORT_ID_CONSUMER, report, sizeof(report));
     }
+    s_consumer_release_pending = !ok;
 
     hid_unlock();
     return ok;
@@ -165,12 +218,8 @@ bool usb_hid_consumer_tap(uint16_t usage_code)
 // Caller must hold the HID mutex.
 static bool mouse_report_locked(uint8_t buttons, int8_t dx, int8_t dy, int8_t wheel)
 {
-    if (!tud_hid_ready()) {
+    if (!hid_prepare_report()) {
         return false;
-    }
-    if (tud_suspended()) {
-        tud_remote_wakeup();
-        vTaskDelay(pdMS_TO_TICKS(10));
     }
 
     hid_mouse_report_t report = {0};
@@ -178,8 +227,14 @@ static bool mouse_report_locked(uint8_t buttons, int8_t dx, int8_t dy, int8_t wh
     report.x = dx;
     report.y = dy;
     report.wheel = wheel;
-    tud_hid_n_report(0, HID_REPORT_ID_MOUSE, &report, sizeof(report));
-    return true;
+    bool ok = tud_hid_n_report(0, HID_REPORT_ID_MOUSE, &report, sizeof(report));
+    if (!ok) {
+        app_log("USB_HID", "Mouse report rejected");
+    }
+    if (ok) {
+        s_mouse_release_pending = false;
+    }
+    return ok;
 }
 
 bool usb_hid_mouse_button_press(uint8_t button_mask)
@@ -197,6 +252,9 @@ bool usb_hid_mouse_button_release(uint8_t button_mask)
     hid_lock();
     s_mouse_buttons &= (uint8_t)~button_mask;
     bool ok = mouse_report_locked(s_mouse_buttons, 0, 0, 0);
+    if (!ok) {
+        s_mouse_release_pending = true;
+    }
     update_hid_led();
     hid_unlock();
     return ok;
@@ -206,7 +264,12 @@ bool usb_hid_mouse_buttons_release(void)
 {
     hid_lock();
     s_mouse_buttons = 0;
-    bool ok = mouse_report_locked(0, 0, 0, 0);
+    bool ok = false;
+    if (s_transport_enabled && !tud_suspended() && tud_hid_ready()) {
+        hid_mouse_report_t report = {0};
+        ok = tud_hid_n_report(0, HID_REPORT_ID_MOUSE, &report, sizeof(report));
+    }
+    s_mouse_release_pending = !ok;
     update_hid_led();
     hid_unlock();
     return ok;

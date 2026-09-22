@@ -248,3 +248,9 @@ bool uac_microphone_is_streaming(void)
 {
     return s_uac_streaming;
 }
+
+void uac_microphone_stop_usb_stream(void)
+{
+    s_uac_streaming = false;
+    s_uac_alt = 0;
+}

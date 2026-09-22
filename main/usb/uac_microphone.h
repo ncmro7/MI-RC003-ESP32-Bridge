@@ -16,6 +16,9 @@ void uac_microphone_task(void);
 /** @brief True while the host has selected the streaming alternate setting. */
 bool uac_microphone_is_streaming(void);
 
+/** @brief Stop submissions before USB suspend, detach, or re-enumeration. */
+void uac_microphone_stop_usb_stream(void);
+
 #ifdef __cplusplus
 }
 #endif

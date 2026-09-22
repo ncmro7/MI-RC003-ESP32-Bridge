@@ -11,6 +11,9 @@ extern "C" {
 /** @brief Initialize the HID bridge (mutex + initial release). */
 void hid_bridge_init(void);
 
+/** @brief Allow or block reports while the USB data endpoints are recovering. */
+void hid_bridge_set_transport_enabled(bool enabled);
+
 bool usb_hid_keyboard_press(uint8_t modifier, uint8_t keycode);
 bool usb_hid_keyboard_release(void);
 bool usb_hid_keyboard_tap(uint8_t modifier, uint8_t keycode);
