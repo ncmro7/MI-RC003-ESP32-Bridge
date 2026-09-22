@@ -37,7 +37,7 @@ try {
 
     foreach ($prof in $profiles) {
         $info = Get-ProfileInfo $prof
-        $buildDir = Get-ProfileBuildDir $prof
+        $profileBuildDir = Get-ProfileBuildDir $prof
         $sdkconfig = Get-ProfileSdkconfig $prof
         $sdkconfigDefaults = $baseDefaults + ';' + (Get-ProfileDefaultsFile $prof)
 
@@ -48,7 +48,7 @@ try {
                 $prevEap = $ErrorActionPreference
                 $ErrorActionPreference = 'Continue'
                 try {
-                    & idf.py -B $buildDir -D "SDKCONFIG=$sdkconfig" -D "SDKCONFIG_DEFAULTS=$sdkconfigDefaults" build
+                    & idf.py -B $profileBuildDir -D "SDKCONFIG=$sdkconfig" -D "SDKCONFIG_DEFAULTS=$sdkconfigDefaults" build
                     $buildCode = $LASTEXITCODE
                 } finally {
                     $ErrorActionPreference = $prevEap
@@ -61,13 +61,13 @@ try {
             Write-Info ('跳过编译 (' + $info.Label + ')，使用现有 build 产物')
         }
 
-        if (-not (Test-Path (Join-Path $buildDir 'flasher_args.json')) -and
+        if (-not (Test-Path (Join-Path $profileBuildDir 'flasher_args.json')) -and
             $prof -eq $Script:DefaultProfile -and
             (Test-Path (Join-Path $Script:BuildDir 'flasher_args.json'))) {
-            $buildDir = $Script:BuildDir
+            $profileBuildDir = $Script:BuildDir
         }
 
-        $plan = Get-FlashPlan -BuildDir $buildDir
+        $plan = Get-FlashPlan -BuildDir $profileBuildDir
         $merged = Join-Path $Script:FirmwareOutDir ('merged-flash-' + $prof + '.bin')
         New-MergedBin -Esptool $tool -Plan $plan -OutFile $merged `
             -FlashMode $FlashMode -FlashFreq $FlashFreq -FlashSize $info.Flash

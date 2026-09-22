@@ -1,27 +1,27 @@
 {
-  "version": "1.3.2",
-  "defaultProfile": "n16r8",
-  "boards": [
-    {
-      "profile": "n16r8",
-      "label": "N16R8",
-      "flash": "16MB",
-      "psram": "8MB Octal",
-      "manifest": "manifest-n16r8.json"
-    },
-    {
-      "profile": "n8r2",
-      "label": "N8R2",
-      "flash": "8MB",
-      "psram": "2MB Quad",
-      "manifest": "manifest-n8r2.json"
-    },
-    {
-      "profile": "n4r2",
-      "label": "N4R2",
-      "flash": "4MB",
-      "psram": "2MB Quad",
-      "manifest": "manifest-n4r2.json"
-    }
-  ]
+    "version":  "1.3.3",
+    "defaultProfile":  "n16r8",
+    "boards":  [
+                   {
+                       "profile":  "n16r8",
+                       "label":  "N16R8",
+                       "flash":  "16MB",
+                       "psram":  "8MB Octal",
+                       "manifest":  "manifest-n16r8.json"
+                   },
+                   {
+                       "profile":  "n8r2",
+                       "label":  "N8R2",
+                       "flash":  "8MB",
+                       "psram":  "2MB Quad",
+                       "manifest":  "manifest-n8r2.json"
+                   },
+                   {
+                       "profile":  "n4r2",
+                       "label":  "N4R2",
+                       "flash":  "4MB",
+                       "psram":  "2MB Quad",
+                       "manifest":  "manifest-n4r2.json"
+                   }
+               ]
 }
