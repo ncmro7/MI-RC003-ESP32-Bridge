@@ -1,5 +1,7 @@
 #include "usb_descriptors.h"
+#include "xusb_gamepad.h"
 #include "app_config.h"
+#include "app_log.h"
 #include "version.h"
 
 #include "tusb.h"
@@ -58,7 +60,7 @@ void usb_descriptors_init(void)
 }
 
 // ===========================================================================
-// HID report descriptor: keyboard (report ID 1) + consumer (report ID 2)
+// HID interface 0 (ITF 2): keyboard (report ID 1) + consumer (report ID 2)
 // + relative mouse (report ID 3: 5 buttons, X/Y, wheel)
 // ===========================================================================
 const uint8_t usb_hid_report_descriptor[] = {
@@ -72,15 +74,19 @@ const uint16_t usb_hid_report_descriptor_len = sizeof(usb_hid_report_descriptor)
 // Configuration descriptor
 //
 //   ITF 0/1 : UAC 1.0 microphone (custom class driver, 108-byte descriptor set)
-//   ITF 2   : HID keyboard + consumer control
+//   ITF 2   : HID keyboard + consumer + mouse
 //   ITF 3   : WebUSB vendor-specific bulk interface
+//   ITF 4   : XUSB game controller (MS-XUSBI vendor interface, 0x21 descriptor)
 // ===========================================================================
+// ITF 4 is a standard interface descriptor (9) + XUSB interface device
+// descriptor type 0x21 (17) + two endpoint descriptors (7 + 7).
+#define XUSB_ITF_DESC_LEN     40
 #define USB_CONFIG_TOTAL_LEN  (TUD_CONFIG_DESC_LEN + 108 + TUD_HID_DESC_LEN + \
-                               TUD_VENDOR_DESC_LEN)
+                               TUD_VENDOR_DESC_LEN + XUSB_ITF_DESC_LEN)
 
 const uint8_t usb_config_descriptor[] = {
     // Configuration number, interface count, string index, total length, attributes, power (mA)
-    TUD_CONFIG_DESCRIPTOR(1, 4, 0, USB_CONFIG_TOTAL_LEN,
+    TUD_CONFIG_DESCRIPTOR(1, 5, 0, USB_CONFIG_TOTAL_LEN,
                           0, 100),
 
     // -------------------- UAC 1.0 microphone (108 bytes) --------------------
@@ -120,6 +126,26 @@ const uint8_t usb_config_descriptor[] = {
     // -------------------- WebUSB vendor interface --------------------
     // Interface number, string index, EP OUT address, EP IN address, EP size
     TUD_VENDOR_DESCRIPTOR(USB_ITF_VENDOR, 7, USB_EP_VENDOR_OUT, USB_EP_VENDOR_IN, 64),
+
+    // -------------------- XUSB game controller (ITF 4) --------------------
+    // Standard vendor-specific interface: class 0xFF / subclass 0x5D (XUSB)
+    // / protocol 0x01 (wired game controller), 2 endpoints.
+    0x09, 0x04, USB_ITF_XUSB, 0x00, 0x02, 0xFF, 0x5D, 0x01, 0,
+    // XUSB Interface Device Descriptor (MS-XUSBI, bDescriptorType 0x21).
+    // wReports encodes endpoint address (high byte) + type/count (low byte):
+    //   IN  0x84: data/status mix, 5 reports
+    //   OUT 0x01: control/status, 3 reports
+    0x11, 0x21,
+    0x00, 0x01,             // bcdXUSB 1.00
+    0x01,                   // bDeviceSubtype = wired game controller
+    0x25, USB_EP_XUSB_IN,   // IN endpoint reports (type=mix, count=5)
+    0x14, 0x00, 0x00, 0x00, 0x00,  // report sizes 0x00..0x04
+    0x13, USB_EP_XUSB_OUT,  // OUT endpoint reports (type=control/status, count=3)
+    0x08, 0x00, 0x00,       // report sizes 0x00..0x02
+    // Endpoint IN (interrupt, 32 bytes, 4 ms).
+    0x07, 0x05, USB_EP_XUSB_IN, 0x03, 0x20, 0x00, 0x04,
+    // Endpoint OUT (interrupt, 32 bytes, 8 ms).
+    0x07, 0x05, USB_EP_XUSB_OUT, 0x03, 0x20, 0x00, 0x08,
 };
 
 TU_VERIFY_STATIC(sizeof(usb_config_descriptor) == USB_CONFIG_TOTAL_LEN,
@@ -133,7 +159,15 @@ TU_VERIFY_STATIC(sizeof(usb_config_descriptor) == USB_CONFIG_TOTAL_LEN,
 // Windows loads winusb.sys and Chrome can reach the interface via WebUSB.
 // ===========================================================================
 #define VENDOR_REQUEST_MICROSOFT  0x02
-#define MS_OS_20_DESC_LEN         0xB2
+
+// The MS OS 2.0 descriptor set carries two function subsets:
+//   ITF 3 (WebUSB vendor) -> WINUSB compatible ID + DeviceInterfaceGUIDs
+//   ITF 4 (XUSB)          -> "XUSB10" compatible ID so Windows binds xusb22.sys
+#define MS_OS_20_LEN_WINUSB_FUNC  0x00A0   // 8 header + 20 compatible + 132 regprop
+#define MS_OS_20_LEN_REGPROP      0x0084
+#define MS_OS_20_LEN_XUSB_FUNC    0x001C   // 8 header + 20 compatible
+#define MS_OS_20_DESC_LEN         (0x000A + 0x0008 + \
+                                   MS_OS_20_LEN_WINUSB_FUNC + MS_OS_20_LEN_XUSB_FUNC)
 
 #define USB_BOS_TOTAL_LEN  (TUD_BOS_DESC_LEN + TUD_BOS_WEBUSB_DESC_LEN + TUD_BOS_MICROSOFT_OS_DESC_LEN)
 
@@ -158,9 +192,9 @@ static const uint8_t desc_ms_os_20[] = {
     U16_TO_U8S_LE(0x0008), U16_TO_U8S_LE(MS_OS_20_SUBSET_HEADER_CONFIGURATION),
     0, 0, U16_TO_U8S_LE(MS_OS_20_DESC_LEN - 0x0A),
 
-    // Function subset header: length, type, first interface, reserved, subset length
+    // Function subset header (WebUSB): first interface, subset length
     U16_TO_U8S_LE(0x0008), U16_TO_U8S_LE(MS_OS_20_SUBSET_HEADER_FUNCTION),
-    USB_ITF_VENDOR, 0, U16_TO_U8S_LE(MS_OS_20_DESC_LEN - 0x0A - 0x08),
+    USB_ITF_VENDOR, 0, U16_TO_U8S_LE(MS_OS_20_LEN_WINUSB_FUNC),
 
     // Compatible ID descriptor: length, type, "WINUSB", sub-compatible
     U16_TO_U8S_LE(0x0014), U16_TO_U8S_LE(MS_OS_20_FEATURE_COMPATBLE_ID),
@@ -168,7 +202,7 @@ static const uint8_t desc_ms_os_20[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 
     // Registry property descriptor: DeviceInterfaceGUIDs
-    U16_TO_U8S_LE(MS_OS_20_DESC_LEN - 0x0A - 0x08 - 0x08 - 0x14),
+    U16_TO_U8S_LE(MS_OS_20_LEN_REGPROP),
     U16_TO_U8S_LE(MS_OS_20_FEATURE_REG_PROPERTY),
     U16_TO_U8S_LE(0x0007), U16_TO_U8S_LE(0x002A), // wPropertyDataType, wPropertyNameLength
     'D', 0x00, 'e', 0x00, 'v', 0x00, 'i', 0x00, 'c', 0x00, 'e', 0x00, 'I', 0x00, 'n', 0x00,
@@ -179,7 +213,15 @@ static const uint8_t desc_ms_os_20[] = {
     '9', 0x00, '-', 0x00, '0', 0x00, 'D', 0x00, '0', 0x00, '8', 0x00, '-', 0x00, '4', 0x00,
     '3', 0x00, 'F', 0x00, 'D', 0x00, '-', 0x00, '8', 0x00, 'B', 0x00, '3', 0x00, 'E', 0x00,
     '-', 0x00, '1', 0x00, '2', 0x00, '7', 0x00, 'C', 0x00, 'A', 0x00, '8', 0x00, 'A', 0x00,
-    'F', 0x00, 'F', 0x00, 'F', 0x00, '9', 0x00, 'D', 0x00, '}', 0x00, 0x00, 0x00, 0x00, 0x00
+    'F', 0x00, 'F', 0x00, 'F', 0x00, '9', 0x00, 'D', 0x00, '}', 0x00, 0x00, 0x00, 0x00, 0x00,
+
+    // --- Function subset: XUSB game controller (ITF 4) ---
+    U16_TO_U8S_LE(0x0008), U16_TO_U8S_LE(MS_OS_20_SUBSET_HEADER_FUNCTION),
+    USB_ITF_XUSB, 0, U16_TO_U8S_LE(MS_OS_20_LEN_XUSB_FUNC),
+    // Compatible ID: "XUSB10"
+    U16_TO_U8S_LE(0x0014), U16_TO_U8S_LE(MS_OS_20_FEATURE_COMPATBLE_ID),
+    'X', 'U', 'S', 'B', '1', '0', 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
 
 TU_VERIFY_STATIC(sizeof(desc_ms_os_20) == MS_OS_20_DESC_LEN, "MS OS 2.0 descriptor size mismatch");
@@ -202,12 +244,24 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
     if (stage != CONTROL_STAGE_SETUP) {
         return true;
     }
+    app_log("USB", "vendor req=0x%02X bmRequestType=0x%02X wVal=0x%04X wIdx=0x%04X wLen=%u",
+            request->bRequest, request->bmRequestType, request->wValue,
+            request->wIndex, request->wLength);
+
+    // XUSB vendor requests (GET_DEVICE_ID / SET_CONTROL) are dispatched here
+    // because the ESP-IDF TinyUSB fork routes every vendor request to this
+    // callback, then delegated to the XUSB class implementation.
+    if (xusb_gamepad_handle_vendor_request(rhport, request)) {
+        return true;
+    }
+
     if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_VENDOR) {
+        // WebUSB GET_URL (device-level).
         if (request->bRequest == WEBUSB_VENDOR_CODE) {
             return tud_control_xfer(rhport, request, (void *)(uintptr_t)&usb_url_descriptor,
                                     usb_url_descriptor.bLength);
         }
-        if (request->bRequest == VENDOR_REQUEST_MICROSOFT && request->wIndex == 7) {
+        if (request->bRequest == VENDOR_REQUEST_MICROSOFT) {
             uint16_t total_len;
             memcpy(&total_len, desc_ms_os_20 + 8, 2);
             return tud_control_xfer(rhport, request, (void *)(uintptr_t)desc_ms_os_20, total_len);

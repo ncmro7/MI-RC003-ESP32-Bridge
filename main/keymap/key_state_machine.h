@@ -26,7 +26,10 @@ typedef enum {
     ACTION_MOUSE_BUTTON_RELEASE,// Internal: release a held mouse button on key-up
     ACTION_MOUSE_MOVE,          // Relative cursor move (dx, dy)
     ACTION_MOUSE_WHEEL,         // Relative wheel scroll
-    ACTION_ENTER_SWITCH_MODE    // Enter the configuration switch mode (modal)
+    ACTION_ENTER_SWITCH_MODE,   // Enter the configuration switch mode (modal)
+    ACTION_GAMEPAD_TAP,         // Tap a virtual gamepad control (down + up)
+    ACTION_GAMEPAD_HOLD,        // Press and hold a virtual gamepad control
+    ACTION_GAMEPAD_RELEASE      // Internal: release a held gamepad control
 } key_action_type_t;
 
 typedef struct {

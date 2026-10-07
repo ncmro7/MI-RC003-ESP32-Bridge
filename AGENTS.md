@@ -64,10 +64,11 @@
    ```
 
    产物（按板型 `n16r8` / `n8r2` / `n4r2` 分开）：
-   - `build/firmware/merged-flash-<板型>.bin` —— **Windows 免安装烧录工具用的固件**
-     （默认板型另存一份 `build/merged-flash.bin` 以兼容旧流程）。
+   - `build/firmware/merged-flash-<板型>.bin` —— **Windows 免安装烧录工具用的固件**。
    - `webusb-config/flash/firmware/merged-flash-<板型>.bin`、`manifest-<板型>.json` 与
      `boards.json` —— 网页烧录固件与板型清单（**受版本控制**，发布时需一并提交）。
+   - 不再生成「默认板型」的重复固件（不再有 `build/merged-flash.bin` 与
+     `webusb-config/flash/manifest.json`）；默认板型由 `boards.json` 的 `defaultProfile` 决定。
 
 2. **打包 Windows 免安装烧录工具**（需先执行第 1 步）：
 
@@ -84,14 +85,13 @@
    - `build/firmware/merged-flash-n16r8.bin`
    - `build/firmware/merged-flash-n8r2.bin`
    - `build/firmware/merged-flash-n4r2.bin`
-   - `build/merged-flash.bin`（默认板型兼容文件）
 
    每个固件以原文件名作为 Release 附件，不要只发 zip 而遗漏原始固件。
 
 ### 版本号
 
 - **唯一来源**：`main/version.h` 的 `FIRMWARE_VERSION`。发布前在此递增，例如 `"1.2.1"`。
-- `build-firmware.ps1` / `package-release.ps1` 会自动读取该值并写入 `manifest.json`。
+- `build-firmware.ps1` / `package-release.ps1` 会自动读取该值并写入 `manifest-<板型>.json`。
 - 不要在任何其它文件里单独维护版本号；`api.md`、`app.js` 等处的版本由发布流程统一管理。
 
 ### WebUSB 着陆页

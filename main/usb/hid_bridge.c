@@ -1,4 +1,5 @@
 #include "hid_bridge.h"
+#include "usb/xusb_gamepad.h"
 #include "app_config.h"
 #include "app_log.h"
 #include "audio/audio_pipeline.h"
@@ -15,13 +16,42 @@
 #define HID_REPORT_ID_CONSUMER 2
 #define HID_REPORT_ID_MOUSE    3
 
+// HID instance 0 = keyboard/consumer/mouse. The gamepad is a separate XUSB
+// (XInput) interface, not a HID instance.
+#define HID_INST_KEYBOARD 0
+
+// Maximum number of simultaneously held virtual gamepad controls (enough for
+// both sticks fully deflected plus a few buttons).
+#define GP_MAX_HELD 12
+
+typedef struct {
+    uint8_t control;  // gamepad_control_t
+    uint8_t value;    // analog magnitude (0 = control default)
+} gp_held_t;
+
 static SemaphoreHandle_t s_hid_mutex = NULL;
 static uint8_t s_mouse_buttons = 0;
+static gp_held_t s_gp_held[GP_MAX_HELD];
+static size_t s_gp_held_count = 0;
 static volatile bool s_transport_enabled = false;
 static volatile bool s_keyboard_release_pending = false;
 static volatile bool s_consumer_release_pending = false;
 static volatile bool s_mouse_release_pending = false;
 static bool s_release_task_started = false;
+
+// Non-blocking gamepad taps: the press is submitted immediately and the
+// release is scheduled and handled by the release task, so the caller never
+// blocks on a gamepad tap (which would stall BLE/key processing).
+#define GP_TAP_HOLD_MS 100
+typedef struct {
+    uint8_t control;
+    TickType_t release_at;
+} gp_tap_t;
+
+static gp_tap_t s_gp_tap[GP_MAX_HELD];
+static size_t s_gp_tap_count = 0;
+
+static void gamepad_process_taps(void);
 
 // Real HID output state, used to drive the LED (yellow while the host is
 // receiving a pressed key/button, cleared on release).
@@ -30,7 +60,8 @@ static bool s_consumer_pressed = false;
 
 static void update_hid_led(void)
 {
-    led_indicator_set_hid_active(s_keyboard_pressed || s_consumer_pressed || s_mouse_buttons != 0);
+    led_indicator_set_hid_active(s_keyboard_pressed || s_consumer_pressed ||
+                                 s_mouse_buttons != 0 || s_gp_held_count != 0);
 }
 
 static void hid_lock(void)
@@ -69,6 +100,12 @@ static void hid_release_retry_task(void *arg)
         } else if (s_mouse_release_pending) {
             usb_hid_mouse_buttons_release();
         }
+
+        // Release gamepad taps whose hold time elapsed.
+        gamepad_process_taps();
+
+        // Keep the XInput report stream alive (~200 Hz) like a real controller.
+        xusb_gamepad_keepalive();
     }
 }
 
@@ -93,6 +130,7 @@ void hid_bridge_set_transport_enabled(bool enabled)
         s_keyboard_pressed = false;
         s_consumer_pressed = false;
         s_mouse_buttons = 0;
+        s_gp_held_count = 0;
         update_hid_led();
     }
     hid_unlock();
@@ -291,6 +329,223 @@ bool usb_hid_mouse_wheel(int8_t wheel)
     return ok;
 }
 
+// ===========================================================================
+// Virtual gamepad (XInput via XUSB)
+//
+// Logical controls (gamepad_control_t) are accumulated into a held set so
+// several can combine (a stick diagonal, bumper + trigger, ...). On every
+// change the whole report is recomputed into a 20-byte XUSB game controller
+// input report and submitted on the XUSB interrupt IN endpoint.
+// ===========================================================================
+
+static int gamepad_held_index(uint8_t control)
+{
+    for (size_t i = 0; i < s_gp_held_count; i++) {
+        if (s_gp_held[i].control == control) return (int)i;
+    }
+    return -1;
+}
+
+static void gamepad_held_set(uint8_t control, uint8_t value)
+{
+    int idx = gamepad_held_index(control);
+    if (idx >= 0) {
+        s_gp_held[idx].value = value;
+    } else if (s_gp_held_count < GP_MAX_HELD) {
+        s_gp_held[s_gp_held_count].control = control;
+        s_gp_held[s_gp_held_count].value = value;
+        s_gp_held_count++;
+    }
+}
+
+static void gamepad_held_clear(uint8_t control)
+{
+    int idx = gamepad_held_index(control);
+    if (idx < 0) return;
+    s_gp_held[idx] = s_gp_held[s_gp_held_count - 1];
+    s_gp_held_count--;
+}
+
+static int clamp_i(int v, int lo, int hi)
+{
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+// XUSB bmButtons bit for a digital control (MS-XUSBI Table 53).
+static uint16_t gamepad_button_bit(uint8_t control)
+{
+    switch (control) {
+        case GP_DPAD_UP:    return XUSB_BTN_DPAD_UP;
+        case GP_DPAD_DOWN:  return XUSB_BTN_DPAD_DOWN;
+        case GP_DPAD_LEFT:  return XUSB_BTN_DPAD_LEFT;
+        case GP_DPAD_RIGHT: return XUSB_BTN_DPAD_RIGHT;
+        case GP_START:      return XUSB_BTN_START;
+        case GP_SELECT:     return XUSB_BTN_BACK;
+        case GP_L3:         return XUSB_BTN_L3;
+        case GP_R3:         return XUSB_BTN_R3;
+        case GP_LB:         return XUSB_BTN_LB;
+        case GP_RB:         return XUSB_BTN_RB;
+        case GP_GUIDE:      return XUSB_BTN_GUIDE;
+        case GP_SHARE:      return XUSB_BTN_BINDING;
+        case GP_A:          return XUSB_BTN_A;
+        case GP_B:          return XUSB_BTN_B;
+        case GP_X:          return XUSB_BTN_X;
+        case GP_Y:          return XUSB_BTN_Y;
+        default:            return 0;
+    }
+}
+
+// Caller must hold the HID mutex.
+static bool gamepad_send_locked(void)
+{
+    int lsx = 0, lsy = 0, rsx = 0, rsy = 0, lt = 0, rt = 0;
+    uint16_t buttons = 0;
+
+    for (size_t i = 0; i < s_gp_held_count; i++) {
+        uint8_t c = s_gp_held[i].control;
+        int mag = s_gp_held[i].value ? s_gp_held[i].value : GP_STICK_DEFAULT;
+
+        buttons |= gamepad_button_bit(c);
+
+        switch (c) {
+            case GP_LT:
+                lt = s_gp_held[i].value ? s_gp_held[i].value : GP_TRIGGER_DEFAULT;
+                break;
+            case GP_RT:
+                rt = s_gp_held[i].value ? s_gp_held[i].value : GP_TRIGGER_DEFAULT;
+                break;
+            // XUSB/XInput Y axis: positive is up.
+            case GP_LS_UP:    lsy += mag; break;
+            case GP_LS_DOWN:  lsy -= mag; break;
+            case GP_LS_LEFT:  lsx -= mag; break;
+            case GP_LS_RIGHT: lsx += mag; break;
+            case GP_RS_UP:    rsy += mag; break;
+            case GP_RS_DOWN:  rsy -= mag; break;
+            case GP_RS_LEFT:  rsx -= mag; break;
+            case GP_RS_RIGHT: rsx += mag; break;
+            default: break;
+        }
+    }
+
+    lsx = clamp_i(lsx, -127, 127);
+    lsy = clamp_i(lsy, -127, 127);
+    rsx = clamp_i(rsx, -127, 127);
+    rsy = clamp_i(rsy, -127, 127);
+
+    // Expand -127..127 to the full XUSB -32768..32767 range (x258).
+    xusb_gamepad_report_t report;
+    memset(&report, 0, sizeof(report));
+    report.report_id = 0x00;
+    report.size = XUSB_REPORT_LEN;
+    report.buttons = buttons;
+    report.left_trigger = (uint8_t)clamp_i(lt, 0, 255);
+    report.right_trigger = (uint8_t)clamp_i(rt, 0, 255);
+    report.left_x = (int16_t)(lsx * 258);
+    report.left_y = (int16_t)(lsy * 258);
+    report.right_x = (int16_t)(rsx * 258);
+    report.right_y = (int16_t)(rsy * 258);
+
+    bool ok = false;
+    if (s_transport_enabled && !tud_suspended()) {
+        ok = xusb_gamepad_send(&report);
+    }
+
+    update_hid_led();
+    return ok;
+}
+
+// Runs from the release task (5 ms cadence). Caller must not hold the mutex.
+static void gamepad_process_taps(void)
+{
+    if (s_gp_tap_count == 0) {
+        return;
+    }
+    TickType_t const now = xTaskGetTickCount();
+    hid_lock();
+    bool changed = false;
+    for (size_t i = 0; i < s_gp_tap_count; ) {
+        if ((int32_t)(now - s_gp_tap[i].release_at) >= 0) {
+            gamepad_held_clear(s_gp_tap[i].control);
+            s_gp_tap[i] = s_gp_tap[s_gp_tap_count - 1];
+            s_gp_tap_count--;
+            changed = true;
+        } else {
+            i++;
+        }
+    }
+    if (changed) {
+        gamepad_send_locked();
+    }
+    hid_unlock();
+}
+
+bool usb_hid_gamepad_press(uint8_t control, uint8_t value)
+{
+    if (control == GP_NONE || control >= GP_CONTROL_COUNT) return false;
+    hid_lock();
+    gamepad_held_set(control, value);
+    bool ok = gamepad_send_locked();
+    hid_unlock();
+    return ok;
+}
+
+bool usb_hid_gamepad_release(uint8_t control)
+{
+    if (control == GP_NONE || control >= GP_CONTROL_COUNT) return false;
+    hid_lock();
+    gamepad_held_clear(control);
+    bool ok = gamepad_send_locked();
+    hid_unlock();
+    return ok;
+}
+
+bool usb_hid_gamepad_tap(uint8_t control, uint8_t value)
+{
+    if (control == GP_NONE || control >= GP_CONTROL_COUNT) return false;
+
+    // Non-blocking: press now and let the release task clear it after the hold
+    // time. Re-tapping the same control extends its release deadline so rapid
+    // taps stay responsive without ever blocking the caller.
+    hid_lock();
+    gamepad_held_set(control, value);
+
+    TickType_t const release_at = xTaskGetTickCount() + pdMS_TO_TICKS(GP_TAP_HOLD_MS);
+    size_t i = 0;
+    for (; i < s_gp_tap_count; i++) {
+        if (s_gp_tap[i].control == control) {
+            s_gp_tap[i].release_at = release_at;
+            break;
+        }
+    }
+    if (i == s_gp_tap_count && s_gp_tap_count < GP_MAX_HELD) {
+        s_gp_tap[s_gp_tap_count].control = control;
+        s_gp_tap[s_gp_tap_count].release_at = release_at;
+        s_gp_tap_count++;
+    }
+
+    bool ok = gamepad_send_locked();
+    hid_unlock();
+    return ok;
+}
+
+bool usb_hid_gamepad_release_all(void)
+{
+    hid_lock();
+    s_gp_held_count = 0;
+    s_gp_tap_count = 0;
+    bool ok = false;
+    if (s_transport_enabled && !tud_suspended()) {
+        xusb_gamepad_report_t neutral;
+        memset(&neutral, 0, sizeof(neutral));
+        neutral.report_id = 0x00;
+        neutral.size = XUSB_REPORT_LEN;
+        ok = xusb_gamepad_send(&neutral);
+    }
+    update_hid_led();
+    hid_unlock();
+    return ok;
+}
+
 void usb_hid_dispatch_action(const key_action_t *action)
 {
     if (!action) return;
@@ -358,6 +613,15 @@ void usb_hid_dispatch_action(const key_action_t *action)
             break;
         case ACTION_MOUSE_WHEEL:
             usb_hid_mouse_wheel(action->mouse_wheel);
+            break;
+        case ACTION_GAMEPAD_TAP:
+            usb_hid_gamepad_tap(action->key_code, (uint8_t)action->consumer_code);
+            break;
+        case ACTION_GAMEPAD_HOLD:
+            usb_hid_gamepad_press(action->key_code, (uint8_t)action->consumer_code);
+            break;
+        case ACTION_GAMEPAD_RELEASE:
+            usb_hid_gamepad_release(action->key_code);
             break;
         default:
             break;

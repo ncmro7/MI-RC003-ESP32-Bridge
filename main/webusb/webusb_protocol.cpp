@@ -5,6 +5,7 @@
 #include "ble/ble_remote_client.h"
 #include "keymap/key_state_machine.h"
 #include "keymap/key_config_storage.h"
+#include "remote/remote_profile.h"
 #include "audio/audio_pipeline.h"
 #include "storage/config_store.h"
 #include "usb/usb_composite.h"
@@ -65,8 +66,10 @@ size_t webusb_protocol_handle(uint8_t cmd, const uint8_t *payload, size_t payloa
         case CMD_DEVICE_INFO: {
             size_t w = (size_t)snprintf((char *)resp, resp_cap,
                 "{\"name\":\"%s\",\"version\":\"%s\",\"build\":\"%s\",\"hardware\":\"%s\",\"protocol\":1,"
-                "\"capabilities\":[\"keymap\",\"layers\",\"ble\",\"webusb\",\"uac\",\"hid\"]}",
-                FIRMWARE_NAME, FIRMWARE_VERSION, FIRMWARE_BUILD, HARDWARE_TARGET);
+                "\"capabilities\":[\"keymap\",\"layers\",\"ble\",\"webusb\",\"uac\",\"hid\",\"gamepad\",\"remote\"],"
+                "\"remote_profile\":\"%s\"}",
+                FIRMWARE_NAME, FIRMWARE_VERSION, FIRMWARE_BUILD, HARDWARE_TARGET,
+                remote_profile_get()->id);
             return w;
         }
 
@@ -174,6 +177,61 @@ size_t webusb_protocol_handle(uint8_t cmd, const uint8_t *payload, size_t payloa
             key_engine_switch_layer(&g_key_engine, layer, (uint32_t)(esp_timer_get_time() / 1000));
             key_engine_unlock();
             return ok(resp, resp_cap, "{\"status\":\"ok\"}");
+        }
+
+        case CMD_REMOTE_INFO: {
+            const remote_profile_t *active = remote_profile_get();
+            JsonDocument doc;
+            doc["active"] = active->id;
+            JsonArray profs = doc["profiles"].to<JsonArray>();
+            const remote_profile_t *list[8];
+            size_t n = remote_profile_list(list, 8);
+            for (size_t i = 0; i < n; i++) {
+                JsonObject o = profs.add<JsonObject>();
+                o["id"] = list[i]->id;
+                o["name"] = list[i]->name;
+            }
+            JsonArray keys = doc["keys"].to<JsonArray>();
+            for (size_t i = 0; i < active->key_count; i++) {
+                JsonObject k = keys.add<JsonObject>();
+                k["vk"] = active->keys[i].code;
+                k["name"] = active->keys[i].name;
+                k["slot"] = active->keys[i].slot;
+            }
+            return serializeJson(doc, (char *)resp, resp_cap);
+        }
+
+        case CMD_REMOTE_SET: {
+            if (!payload || payload_len == 0) {
+                *status = WEBUSB_ERR_ARG;
+                return ok(resp, resp_cap, "{\"error\":\"missing_body\"}");
+            }
+            char *json = (char *)heap_caps_malloc(payload_len + 1, MALLOC_CAP_SPIRAM);
+            if (!json) {
+                *status = WEBUSB_ERR_INTERNAL;
+                return ok(resp, resp_cap, "{\"error\":\"no_mem\"}");
+            }
+            memcpy(json, payload, payload_len);
+            json[payload_len] = '\0';
+            JsonDocument doc;
+            DeserializationError err = deserializeJson(doc, json);
+            heap_caps_free(json);
+            if (err) {
+                *status = WEBUSB_ERR_ARG;
+                return ok(resp, resp_cap, "{\"error\":\"invalid_json\"}");
+            }
+            const char *id = doc["id"] | "";
+            // Release held keys with the old profile before switching slots.
+            key_engine_release_all(&g_key_engine, (uint32_t)(esp_timer_get_time() / 1000));
+            const remote_profile_t *p = remote_profile_set_by_id(id);
+            if (!p) {
+                *status = WEBUSB_ERR_ARG;
+                return ok(resp, resp_cap, "{\"error\":\"unknown_profile\"}");
+            }
+            key_engine_release_all(&g_key_engine, (uint32_t)(esp_timer_get_time() / 1000));
+            char out[128];
+            snprintf(out, sizeof(out), "{\"status\":\"ok\",\"active\":\"%s\"}", p->id);
+            return ok(resp, resp_cap, out);
         }
 
         case CMD_KEYMAP_SAVE: {

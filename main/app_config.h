@@ -74,16 +74,20 @@ extern "C" {
 // Interface numbers (must match usb_descriptors.c)
 #define USB_ITF_UAC_AC            0
 #define USB_ITF_UAC_AS            1
-#define USB_ITF_HID               2
+#define USB_ITF_HID               2         // HID: keyboard + consumer + mouse
 #define USB_ITF_VENDOR            3
+#define USB_ITF_XUSB              4         // XUSB game controller (MS-XUSBI, vendor-specific)
 
 // Endpoint addresses
-// NOTE: the ESP32-S3 DWC2 exposes very few IN endpoints (effectively EP1-EP4).
-// Keep every IN endpoint within that range.
+// NOTE: the ESP32-S3 DWC2 exposes five IN endpoints total *including* EP0, so at
+// most four non-control IN endpoints can be active. All four are used here
+// (UAC / HID / Vendor / XUSB); OUT endpoints are unconstrained by that budget.
 #define USB_EP_UAC_IN             0x81      // Isochronous IN  (microphone)
-#define USB_EP_HID_IN             0x82      // Interrupt IN    (keyboard/consumer)
+#define USB_EP_HID_IN             0x82      // Interrupt IN    (keyboard/consumer/mouse)
 #define USB_EP_VENDOR_IN          0x83      // Bulk IN         (WebUSB responses)
-#define USB_EP_VENDOR_OUT         0x05      // Bulk OUT        (WebUSB requests)
+#define USB_EP_XUSB_IN            0x84      // Interrupt IN    (XUSB controller state)
+#define USB_EP_XUSB_OUT           0x01      // Interrupt OUT   (XUSB rumble / control)
+#define USB_EP_VENDOR_OUT         0x02      // Bulk OUT        (WebUSB requests)
 
 // WebUSB bulk transfer / framing
 #define WEBUSB_FRAME_SOF0         0x4D      // 'M'

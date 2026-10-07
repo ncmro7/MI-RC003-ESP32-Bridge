@@ -4,7 +4,6 @@
 >
 > - 库文件：[`assets/mi-rc003.js`](./assets/mi-rc003.js)
 > - 默认界面示例：[`assets/app.js`](./assets/app.js)
-> - 旧版说明（保留）：[`doc.md`](./doc.md)
 
 ---
 
@@ -69,6 +68,8 @@
 | `KEYMAP_DATA` | `0x16` | 分块上传数据 |
 | `KEYMAP_COMMIT` | `0x17` | 分块上传提交 |
 | `SET_LAYER` | `0x18` | 切换设备当前配置（层） |
+| `REMOTE_INFO` | `0x19` | 遥控器型号（profile）与可用按键列表 |
+| `REMOTE_SET` | `0x1a` | 切换当前遥控器型号（持久化） |
 | `BLE_SCAN` | `0x20` | 扫描蓝牙 |
 | `BLE_CONNECT` | `0x21` | 连接指定设备 |
 | `BLE_UNPAIR` | `0x22` | 解除绑定 |
@@ -107,8 +108,15 @@ MiRC003.ACTION[1]              // "键盘-单击"
 | `CONSUMER_HOLD` | 5 | `MOUSE_MOVE` | 14 |
 | `CONSUMER_RELEASE` | 6 | `MOUSE_WHEEL` | 15 |
 | `VOICE` | 7 | `ENTER_SWITCH_MODE` | 16 |
-| `VOICE_RELEASE` | 8 | | |
+| `VOICE_RELEASE` | 8 | `GAMEPAD_TAP` | 17 |
+| | | `GAMEPAD_HOLD` | 18 |
+| | | `GAMEPAD_RELEASE` | 19 |
 
+> `GAMEPAD_RELEASE`（19）为固件内部使用（松开「手柄-按住」动作时自动发出），
+> 默认 UI 不提供该选项。手柄动作把「手柄按键 id」存入 `*_key`、把模拟量
+> （摇杆幅度 / 扳机力度，`0` = 使用默认）存入 `*_cons`，详见
+> [`MiRC003.GAMEPAD_CONTROLS`](#mirc003gamepad_controls--虚拟-xbox-手柄按键)。
+>
 > `MOUSE_BUTTON_RELEASE`（13）为固件内部使用（松开鼠标按住键时自动发出），
 > 默认 UI 不再提供该选项；此处保留常量以便解析遥测数据。
 >
@@ -208,6 +216,39 @@ MiRC003.ACTION[1]              // "键盘-单击"
 
 用于鼠标按键类动作的 `*_key`（按钮位掩码）。
 
+### `MiRC003.GAMEPAD_CONTROLS` — 虚拟 Xbox 手柄按键
+
+设备暴露一个 **Xbox 360（XInput）** 手柄接口：Windows 显示为
+「Xbox 360 Controller for Windows」，可直接用于 XInput 游戏（通过 Microsoft OS 2.0 的
+`USB\MS_COMP_XUSB10` 兼容 ID 加载内置驱动），并被识别为 1 号手柄。
+
+```js
+MiRC003.GAMEPAD_CONTROLS
+// [ { id: 1, name: "A", group: "面键" }, { id: 2, name: "B", group: "面键" }, ... ]
+MiRC003.GAMEPAD_CONTROL_NAME[1]   // "A"
+MiRC003.gamepadName(1)            // "A"
+```
+
+完整 id 表（固件 `gamepad_control_t`）：
+
+| id | 名称 | id | 名称 |
+| :--- | :--- | :--- | :--- |
+| 1 | A | 15–18 | 方向键 上/下/左/右 |
+| 2 | B | 19–22 | 左摇杆 上/下/左/右 |
+| 3 | X | 23–26 | 右摇杆 上/下/左/右 |
+| 4 | Y | 13 | L3（左摇杆按下） |
+| 5 | LB（左肩键） | 14 | R3（右摇杆按下） |
+| 6 | RB（右肩键） | 9 | Select (View) |
+| 7 | LT（左扳机） | 10 | Start (Menu) |
+| 8 | RT（右扳机） | 11 | Xbox 键 (Guide) |
+| | | 12 | 截屏键 (Share) |
+
+- 手柄动作类型：`GAMEPAD_TAP`（按下即触发单击）、`GAMEPAD_HOLD`（按住期间持续生效，
+  松开自动释放）。摇杆方向建议用 `GAMEPAD_HOLD`，按钮建议用 `GAMEPAD_TAP`。
+- 动作对象里 `keyCode` = 上表 id，`consumerCode` = 模拟量（`0` 表示默认：摇杆 127、
+  扳机 255）。
+- 多个控制可同时生效（例如摇杆斜向 = 同时按住两个方向），固件会合并为一个手柄报文。
+
 ### `MiRC003.HID_GROUPS` / `MiRC003.HID_EXTRA_GROUPS` / `MiRC003.CONSUMER_GROUPS`
 
 键码分组，格式 `[组名, [[usage, 名称], ...]]`，可直接用于生成 `<optgroup>/<option>`：
@@ -276,7 +317,7 @@ dev.send(cmd, payloadObj?, rawBytes?)
 
 | 方法 | 返回 |
 | :--- | :--- |
-| `deviceInfo()` | `Promise<{ name, version, build, hardware, protocol, capabilities[] }>` |
+| `deviceInfo()` | `Promise<{ name, version, build, hardware, protocol, capabilities[], remote_profile }>` |
 | `status()` | `Promise<{ firmware, version, build, uptime_sec, ble_state, active_layer, battery, frames_decoded, samples_pushed, free_heap, free_psram, usb_mounted, switch_mode, config_rev }>` |
 | `telemetry()` | `Promise<{ source_vk, is_pressed, pressed_vk, duration_ms, action_type, modifier, key_code, consumer_code, active_layer, switch_mode }>` |
 
@@ -296,6 +337,28 @@ dev.send(cmd, payloadObj?, rawBytes?)
 | `setLayer(layer)` | `Promise<object>` | 切换设备当前配置（层索引 `0`-`4`） |
 
 `Keymap` 结构见[第 5 节](#5-keymap-json-结构)。
+
+### 遥控器型号（多机型适配）
+
+固件通过**遥控器 profile** 抽象适配不同型号：profile 负责把各机型原始 HID 码归一化为
+统一的规范键码（`source_vk`），并声明该机型暴露的物理按键列表。设备侧 keymap 与网页 UI
+均与机型解耦——网页可用 `remoteInfo()` 读取当前机型的按键来渲染遥控器。
+
+| 方法 | 参数 | 返回 |
+| :--- | :--- | :--- |
+| `remoteInfo()` | — | `Promise<{ active, profiles: [{id,name}], keys: [{vk,name,slot}] }>` |
+| `setRemoteProfile(id)` | 型号 id | `Promise<{ status, active }>`（持久化到设备） |
+
+```js
+const info = await dev.remoteInfo();
+console.log(info.active);            // 例如 "rc003"
+info.keys.forEach(k => console.log(k.vk.toString(16), k.name));
+await dev.setRemoteProfile("rc003");
+```
+
+> 内置机型：`rc003`（MIRC 2 Pro）。
+> 新增机型只需在固件 `main/remote/remote_profile.c` 注册一个 profile（键表 + 归一化函数），
+> 并（如需要）实现对应的 BLE 报文解析，无需改动本库或 keymap。
 
 ### 蓝牙
 
@@ -445,7 +508,9 @@ await dev.saveKeymap(km);
   - `_mod` / `_key`：键盘修饰键与 HID 键码（键盘类动作）。
   - `_cons`：USB Consumer 多媒体码（多媒体类动作）。
   - `_layer`：目标配置（切换配置动作）。
-  - `_key`：鼠标按键位掩码（鼠标按键类动作，见 `MOUSE_BUTTONS`）。
+  - `_key`：鼠标按键位掩码（鼠标按键类动作，见 `MOUSE_BUTTONS`）；手柄动作时为
+    「手柄按键 id」（见 `GAMEPAD_CONTROLS`）。
+  - `_cons`：手柄动作时为模拟量（摇杆幅度 / 扳机力度，`0` = 默认）。
   - `_dx` / `_dy`：相对移动量（鼠标移动动作，`-127`~`127`；UI 以「方向 + 速度」配置，按住时持续移动，松开停止）。
   - `_wheel`：滚轮量（鼠标滚轮动作，`-127`~`127`，正数向上）。
   - `_ms`：长按 / 双击判定时间（仅 long/double）。
@@ -537,4 +602,6 @@ try {
 | `MiRC003.CMD` | `main/webusb/webusb_protocol.h` 的 `CMD_*` |
 | `MiRC003.STATUS` | 同文件的 `WEBUSB_*` |
 | `MiRC003.ACTIONS` | `main/keymap/key_state_machine.h` 的 `ACTION_*` |
+| `MiRC003.GAMEPAD_CONTROLS` | `main/keymap/key_definitions.h` 的 `gamepad_control_t` |
 | 遥测字段 | `key_telemetry_to_json()`（`main/keymap/key_config_storage.cpp`） |
+| 遥控器型号 / 按键列表 | `main/remote/remote_profile.{h,c}` |

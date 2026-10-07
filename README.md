@@ -6,11 +6,6 @@
 > **配置站点（WebUSB）**：<https://ncmro7.github.io/MI-RC003-ESP32-Bridge/>
 > **在线烧录**：<https://ncmro7.github.io/MI-RC003-ESP32-Bridge/flash/>
 
-> [!WARNING]
-> **⚠️ 本项目由 AI 辅助开发，尚未完善，可能存在较多问题，请谨慎使用。**
-> 如需稳定可用的方案，建议使用
-> [cuicui-V5/RemoteMapper-ESP32](https://github.com/cuicui-V5/RemoteMapper-ESP32)。
-
 ---
 
 ## 1. 这是什么
@@ -29,14 +24,16 @@
 
 | 能力 | 说明 |
 | :--- | :--- |
-| BLE 直连 | 作为 BLE Central 连接 RC003（HOGP 按键 + ATVV 语音），支持扫描/绑定/重连 |
-| USB 复合设备 | UAC 1.0 麦克风 + HID 键盘/多媒体/鼠标 + WebUSB 厂商接口 |
+| BLE 直连 | 作为 BLE Central 连接 RC003（HOGP 按键 + ATVV 语音），支持扫描/绑定/重连；抑制从机 latency 以保持按键低延迟 |
+| USB 复合设备 | UAC 1.0 麦克风 + HID 键盘/多媒体/鼠标 + WebUSB 厂商接口 + **虚拟 Xbox 手柄（XUSB/XInput）** |
 | 语音麦克风 | 16 kHz / 16-bit 单声道，IMA-ADPCM 解码 + AGC，按住语音键推流 |
 | 多配置方案 | 5 套配置（默认 + 配置 1~4），各配置按键映射相互独立，支持「穿透继承」默认配置 |
-| 动作类型 | 键盘（单击/按住/释放）、多媒体、鼠标按键（单击/按住）、鼠标移动、鼠标滚轮、语音、进入配置切换模式 |
+| 动作类型 | 键盘（单击/按住/释放）、多媒体、鼠标按键（单击/按住）、鼠标移动、鼠标滚轮、语音、**虚拟 Xbox 手柄**、进入配置切换模式 |
+| 手柄映射 | 把任意按键映射为手柄输入：左右摇杆（四方向 + L3/R3）、方向键、A/B/X/Y、LB/RB、LT/RT、Select、Start、Xbox、截屏/Share；快捷预设一键套用 |
+| 多机型适配 | 遥控器 profile 抽象：把不同机型的原始 HID 码归一化为统一键码；内置 RC003（可扩展），网页自动读取当前机型按键 |
 | 手势 | 单击 / 长按 / 双击 / 连发，每种手势可独立配置 |
 | 配置切换模式 | 遥控器上即可切换配置：长按电视键进入，方向键选择，LED 呼吸提示（见第 6 节） |
-| 浏览器配置 | 纯静态站点，WebUSB 直连；可视化遥控器、可视化键盘、快捷预设、实时状态 |
+| 浏览器配置 | 纯静态站点，WebUSB 直连；可视化遥控器、可视化键盘、快捷预设、动作类型多级分类菜单、弹窗内「应用按键」、实时状态 |
 | 实时同步 | 状态每秒刷新，设备侧配置变更自动重读，标签页切回立即刷新 |
 | 一键烧录 | 网页在线烧录（ESP Web Tools）+ Windows 免安装 `flash.bat`（内置 esptool） |
 
@@ -56,17 +53,19 @@
                                                      │        PC / Windows    │
                                                      │ • UAC 1.0 麦克风       │
                                                      │ • HID 键盘 + 多媒体键  │
+                                                     │ • 虚拟 Xbox 手柄       │
                                                      │ • WebUSB 配置接口 ◄────┼── 浏览器访问配置站点
                                                      └────────────────────────┘
 ```
 
-USB 复合设备包含 4 个接口：
+USB 复合设备包含 5 个接口（ESP32-S3 最多 4 个非控制 IN 端点，已全部使用）：
 
 | 接口 | 类 | 端点 | 说明 |
 | :--- | :--- | :--- | :--- |
 | 0 / 1 | Audio (UAC 1.0) | ISO IN `0x81` | 16 kHz / 16-bit / 单声道麦克风 |
 | 2 | HID | INT IN `0x82` | 键盘（Report ID 1）+ 多媒体（Report ID 2）+ 鼠标（Report ID 3） |
-| 3 | Vendor (WebUSB) | BULK OUT `0x05` / BULK IN `0x83` | WebUSB 配置通道 |
+| 3 | Vendor (WebUSB) | BULK IN `0x83` / BULK OUT `0x02` | WebUSB 配置通道 |
+| 4 | Vendor (XUSB) | INT IN `0x84` / INT OUT `0x01` | Xbox 360（XInput）手柄，Windows 显示为「Xbox 360 Controller for Windows」 |
 
 > **烧录与调试**
 > * 复合设备占用的是 ESP32-S3 的**原生 USB（GPIO19/20，OTG）**口，运行时它同时提供
@@ -131,8 +130,10 @@ Python / ESP-IDF**，自动探测串口并烧录；运行时按提示选择开�
 * **设备状态**：固件版本、运行时间、BLE 状态、遥控器电量、当前配置、切换模式、内存占用，
   以及实时按键检测（按下键、最近动作、键值、时长）。
 * **按键配置**：5 套配置方案的可视化遥控器编辑；点击任意按键可配置单击/长按/双击/连发，
-  支持可视化键盘、多媒体分组、鼠标按键/移动/滚轮、语音快捷键预设；另有「配置切换模式…」
-  按钮弹窗编辑配置切换映射。
+  动作类型为**多级分类菜单**（键盘 / 多媒体 / 鼠标 / 游戏手柄 / 语音 / 系统）；弹窗右上角
+  **「应用按键」**可快速应用；手柄提供快捷预设（A/B/X/Y、LB/RB/LT/RT、Select/Start/Xbox、方向键），
+  摇杆/肩键可设 **0-255 幅度（默认 255）**；**「长按」手势与「按住」动作互斥**；另有
+  「配置切换模式…」按钮弹窗编辑配置切换映射。
 * **蓝牙配对**：扫描、连接、重新连接、解除绑定。
 * **运行日志**：查看 / 清空设备日志。
 * **系统设置**：重启、恢复出厂、原始 JSON 导入导出。
@@ -215,6 +216,37 @@ HTML/JS 调用该 API，完全替换默认 UI。完整 API 参考见
 方向并设置速度，按住持续移动，松开即停；滚轮可选滚动方向与每次格数。鼠标按键提供单击与
 按住两种（按住时松开自动释放）；「语音」动作可配置 Windows 语音快捷键（默认 `RAlt + ,`）。
 
+还可把任意按键映射为**虚拟 Xbox 360（XInput）手柄**输入。设备暴露一个标准的 XInput 接口
+（接口 4，`FF/5D/01`）：通过 Microsoft OS 2.0 描述符声明 `USB\MS_COMP_XUSB10` 兼容 ID，
+Windows 会加载内置的 Xbox 360 驱动（`xusb22`），在设备管理器中显示为
+**Xbox 360 Controller for Windows**，可直接用于 XInput 游戏（`joy.cpl` 可查看）。
+
+支持左/右摇杆四方向与 L3/R3、方向键、A/B/X/Y、LB/RB、LT/RT、Select(View)/Start(Menu)/Xbox(Guide)、
+截屏/Share（映射为 Binding）。摇杆方向与扳机为**模拟量**，幅度可设 0-255（默认 255），普通按钮无幅度。
+
+> 设备只暴露一个手柄（纯 XInput），因此会被系统识别为「1 号手柄」。
+> XInput 采用 Microsoft 的兼容 ID 方式（不改本设备 VID/PID），WebUSB 配置不受影响；
+> 若系统曾缓存旧设备，烧录后请先在设备管理器中卸载该设备再重新插拔。
+> **浏览器 Gamepad API 不保证枚举纯 XInput 设备**（取决于浏览器/系统实现）；
+> 浏览器内如需手柄，请以系统识别的「Xbox 360 Controller」为准。
+
+### 多遥控器适配
+
+固件把「遥控器型号」抽象为 **remote profile**（`main/remote/`）：profile 负责把该机型
+原始 HID 码归一化为统一规范键码（`source_vk`），并声明它暴露的物理按键表（含稳定 slot）。
+keymap、按键状态机与网页 UI 都只依赖规范键码，因而与具体机型解耦。
+
+适配一款新遥控器只需：
+
+1. 在 `main/remote/remote_profile.c` 中新增一个 `remote_profile_t`（键表 + `canonicalize`
+   归一化函数），并加入内部 registry；
+2. 在 BLE 侧（如报文体不同）把该机型的原始报文解析为 `key_engine_feed_key()` 所需的
+   原始键码即可（现有 RC003 解析已兼容标准 HID 键盘报文与 RC003 厂商报文）；
+3. 可选：在 `ble_name_hint` 填入广播名特征，让设备连接时自动选中该 profile。
+
+配置站点通过 `dev.remoteInfo()` 读取当前 profile 与按键列表自动渲染遥控器，用
+`dev.setRemoteProfile(id)` 切换机型（持久化到设备）。当前内置 `rc003`，按上述步骤可扩展更多机型。
+
 > 说明：RC003 的 HOGP 输入报文是「Report ID 1 + 3 个小端 16-bit 键盘 usage」。
 > 固件会将其解析并归一化为上表的内部键码（例如 HID usage `0x4A/0x65/0x35` 分别
 > 归一化为主页/菜单/电视键），同时兼容标准 8 字节键盘报文。
@@ -275,7 +307,7 @@ package-release.bat           :: 打包 Windows 免安装烧录工具到 dist\
 
 | 产物 | 说明 |
 | :--- | :--- |
-| `build/firmware/merged-flash-<板型>.bin` | 各板型的合并固件（Windows 烧录工具用；默认板型另存一份 `build/merged-flash.bin`） |
+| `build/firmware/merged-flash-<板型>.bin` | 各板型的合并固件（Windows 烧录工具与 GitHub Release 用） |
 | `webusb-config/flash/firmware/merged-flash-<板型>.bin` + `manifest-<板型>.json` + `boards.json` | 网页烧录固件与板型清单（受版本控制） |
 | `dist/MI-RC003-Bridge-<版本>-win64/` | 免安装 Windows 烧录包（内置 esptool + `flash.bat`） |
 | `dist/MI-RC003-Bridge-<版本>-win64.zip` | 发布压缩包，上传 GitHub Release |
@@ -336,7 +368,7 @@ MI-RC003-ESP32-Bridge/
 ├── AGENTS.md                                  # 编译/发布/WebUSB API 约定
 ├── tools/
 │   ├── common.ps1                             # 脚本公共函数
-│   ├── build-firmware.ps1                     # 生成 build/merged-flash.bin 与网页固件
+│   ├── build-firmware.ps1                     # 生成 build/firmware/merged-flash-<板型>.bin 与网页固件
 │   ├── package-release.ps1                    # 打包 dist/ Windows 烧录工具
 │   └── standalone/{flash.bat,flash.ps1}       # 最终用户免安装烧录脚本模板
 ├── main/
@@ -345,11 +377,13 @@ MI-RC003-ESP32-Bridge/
 │   ├── ble/ble_remote_client.*    # NimBLE Central: HOGP + ATVV
 │   ├── audio/                     # IMA-ADPCM / AGC / 滤波 / 环形缓冲
 │   ├── keymap/                    # 多配置按键状态机 + 配置切换模式 + NVS 配置
+│   ├── remote/remote_profile.*    # 遥控器机型 profile：原始 HID 码归一化 + 按键表
 │   ├── storage/config_store.*     # NVS 封装
 │   ├── usb/
 │   │   ├── usb_descriptors.*      # 设备/配置/BOS/WebUSB/HID 描述符
 │   │   ├── uac_microphone.*       # 自定义 UAC 1.0 类驱动
-│   │   ├── hid_bridge.*           # HID 键盘 + 多媒体 + 鼠标发送
+│   │   ├── hid_bridge.*           # HID 键盘 + 多媒体 + 鼠标 + 手柄发送
+│   │   ├── xusb_gamepad.*         # XUSB（XInput）手柄类驱动（兼容 ID: XUSB10）
 │   │   ├── webusb_transport.*     # 厂商端点帧协议
 │   │   └── usb_composite.*
 │   ├── webusb/webusb_protocol.cpp # WebUSB 命令分发
@@ -358,7 +392,6 @@ MI-RC003-ESP32-Bridge/
 └── webusb-config/                 # 浏览器配置站点（静态）
     ├── index.html
     ├── api.md                      # 浏览器库 API 参考（权威）
-    ├── doc.md                      # 旧版说明
     ├── assets/{mi-rc003.js,app.js,style.css}
     └── flash/                     # 网页固件烧录（ESP Web Tools）
         ├── index.html

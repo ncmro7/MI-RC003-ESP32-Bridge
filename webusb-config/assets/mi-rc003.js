@@ -55,6 +55,8 @@
     KEYMAP_DATA: 0x16,
     KEYMAP_COMMIT: 0x17,
     SET_LAYER: 0x18,
+    REMOTE_INFO: 0x19,
+    REMOTE_SET: 0x1a,
     BLE_SCAN: 0x20,
     BLE_CONNECT: 0x21,
     BLE_UNPAIR: 0x22,
@@ -91,6 +93,9 @@
     MOUSE_MOVE: 14,
     MOUSE_WHEEL: 15,
     ENTER_SWITCH_MODE: 16,
+    GAMEPAD_TAP: 17,
+    GAMEPAD_HOLD: 18,
+    GAMEPAD_RELEASE: 19,
   };
 
   /** Human-readable action names, keyed by action type. */
@@ -112,7 +117,51 @@
     14: "鼠标移动",
     15: "鼠标滚轮",
     16: "进入配置切换模式",
+    17: "手柄-单击",
+    18: "手柄-按住",
+    19: "手柄-释放",
   };
+
+  /**
+   * Virtual Xbox-layout gamepad controls (values match firmware
+   * key_definitions.h `gamepad_control_t`). Stored in an action's `keyCode`
+   * (`*_key`); the analog magnitude goes in `consumerCode` (`*_cons`).
+   */
+  var GAMEPAD_CONTROLS = [
+    { id: 1,  name: "A", group: "面键" },
+    { id: 2,  name: "B", group: "面键" },
+    { id: 3,  name: "X", group: "面键" },
+    { id: 4,  name: "Y", group: "面键" },
+    { id: 5,  name: "LB (左肩键)", group: "肩键/扳机" },
+    { id: 6,  name: "RB (右肩键)", group: "肩键/扳机" },
+    { id: 7,  name: "LT (左扳机)", group: "肩键/扳机" },
+    { id: 8,  name: "RT (右扳机)", group: "肩键/扳机" },
+    { id: 9,  name: "Select (View)", group: "菜单键" },
+    { id: 10, name: "Start (Menu)", group: "菜单键" },
+    { id: 11, name: "Xbox 键 (Guide)", group: "菜单键" },
+    { id: 12, name: "截屏键 (Share)", group: "菜单键" },
+    { id: 13, name: "L3 (左摇杆按下)", group: "摇杆" },
+    { id: 14, name: "R3 (右摇杆按下)", group: "摇杆" },
+    { id: 15, name: "方向键 上", group: "方向键" },
+    { id: 16, name: "方向键 下", group: "方向键" },
+    { id: 17, name: "方向键 左", group: "方向键" },
+    { id: 18, name: "方向键 右", group: "方向键" },
+    { id: 19, name: "左摇杆 上", group: "左摇杆" },
+    { id: 20, name: "左摇杆 下", group: "左摇杆" },
+    { id: 21, name: "左摇杆 左", group: "左摇杆" },
+    { id: 22, name: "左摇杆 右", group: "左摇杆" },
+    { id: 23, name: "右摇杆 上", group: "右摇杆" },
+    { id: 24, name: "右摇杆 下", group: "右摇杆" },
+    { id: 25, name: "右摇杆 左", group: "右摇杆" },
+    { id: 26, name: "右摇杆 右", group: "右摇杆" },
+  ];
+
+  var GAMEPAD_CONTROL_NAME = {};
+  GAMEPAD_CONTROLS.forEach(function (c) { GAMEPAD_CONTROL_NAME[c.id] = c.name; });
+
+  function gamepadName(id) {
+    return GAMEPAD_CONTROL_NAME[id] || (id ? "未知手柄键 (" + id + ")" : "未选择");
+  }
 
   /** Gesture keys used by Keymap helpers. */
   var GESTURES = { CLICK: "click", LONG: "long", DOUBLE: "double", REPEAT: "repeat" };
@@ -471,6 +520,11 @@
       case ACTIONS.MOUSE_WHEEL:
         b[prefix + "_wheel"] = action.wheel || 0;
         break;
+      case ACTIONS.GAMEPAD_TAP:
+      case ACTIONS.GAMEPAD_HOLD:
+        b[prefix + "_key"] = action.keyCode || 0;        // gamepad control id
+        b[prefix + "_cons"] = action.consumerCode || 0;  // analog magnitude
+        break;
       default:
         break;
     }
@@ -723,6 +777,17 @@
   };
 
   /**
+   * Active remote profile plus all registered profiles and the active
+   * profile's key list: { active, profiles: [{id,name}], keys: [{vk,name,slot}] }.
+   */
+  MiRC003.prototype.remoteInfo = function () { return this.send(CMD.REMOTE_INFO); };
+
+  /** Select the active remote profile by id (persisted on the device). */
+  MiRC003.prototype.setRemoteProfile = function (id) {
+    return this.send(CMD.REMOTE_SET, { id: id });
+  };
+
+  /**
    * Persist a keymap object (same shape as getKeymap()).
    * Uses KEYMAP_BEGIN/DATA/COMMIT so large keymaps stream in chunks.
    */
@@ -784,6 +849,9 @@
   MiRC003.HID_EXTRA_GROUPS = HID_EXTRA_GROUPS;
   MiRC003.HID_MODIFIERS = HID_MODIFIERS;
   MiRC003.CONSUMER_GROUPS = CONSUMER_GROUPS;
+  MiRC003.GAMEPAD_CONTROLS = GAMEPAD_CONTROLS;
+  MiRC003.GAMEPAD_CONTROL_NAME = GAMEPAD_CONTROL_NAME;
+  MiRC003.gamepadName = gamepadName;
   MiRC003.Keymap = Keymap;
 
   global.MiRC003 = MiRC003;

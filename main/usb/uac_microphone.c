@@ -221,9 +221,10 @@ static usbd_class_driver_t const s_uac_driver = {
     .sof = NULL,
 };
 
-usbd_class_driver_t const *usbd_app_driver_get_cb(uint8_t *driver_count)
+// Registered together with the XUSB class driver by usbd_app_driver_get_cb()
+// (see xusb_gamepad.c).
+usbd_class_driver_t const *uac_microphone_class_driver(void)
 {
-    *driver_count = 1;
     return &s_uac_driver;
 }
 

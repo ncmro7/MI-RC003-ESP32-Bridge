@@ -108,7 +108,7 @@
   </div>
 
   <div class="card center">
-    <esp-web-install-button id="installer" manifest="manifest.json">
+    <esp-web-install-button id="installer" manifest="manifest-n16r8.json">
       <button slot="activate">连接设备并烧录</button>
       <span slot="unsupported">
         当前浏览器不支持 Web Serial。<br />
@@ -137,7 +137,7 @@
   </div>
 
   <script>
-    const DEFAULT_BOARD = { profile: 'n16r8', label: 'N16R8', manifest: 'manifest.json' };
+    const DEFAULT_BOARD = { profile: 'n16r8', label: 'N16R8', manifest: 'manifest-n16r8.json' };
     const installer = document.getElementById('installer');
     const select = document.getElementById('board-select');
     const hint = document.getElementById('board-hint');
@@ -151,11 +151,18 @@
     }
 
     function applyBoard(board) {
-      installer.setAttribute('manifest', board.manifest);
+      // Append the content hash so neither the manifest nor the firmware
+      // binary is served from a stale HTTP cache after a rebuild.
+      const bust = board.build ? ('?v=' + board.build) : '';
+      installer.setAttribute('manifest', board.manifest + bust);
       hint.textContent = boardSummary(board);
-      fetch(board.manifest, { cache: 'no-store' })
+      fetch(board.manifest + bust, { cache: 'no-store' })
         .then(r => (r.ok ? r.json() : null))
-        .then(m => { if (m) versionEl.textContent = (m.name || '固件') + ' v' + (m.version || ''); })
+        .then(m => {
+          if (!m) return;
+          const build = m.build ? ' · 构建 ' + String(m.build).slice(0, 8) : '';
+          versionEl.textContent = (m.name || '固件') + ' v' + (m.version || '') + build;
+        })
         .catch(() => {});
     }
 

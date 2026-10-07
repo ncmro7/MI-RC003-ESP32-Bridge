@@ -31,6 +31,19 @@ bool usb_hid_mouse_buttons_release(void);
 bool usb_hid_mouse_move(int8_t dx, int8_t dy);
 bool usb_hid_mouse_wheel(int8_t wheel);
 
+/**
+ * @brief Virtual Xbox-layout gamepad control.
+ *
+ * @p control is a `gamepad_control_t`; @p value is the analog magnitude
+ * (0 = use the control's default). Press/release maintain the accumulated
+ * control set so several directions can combine (e.g. a stick diagonal).
+ */
+bool usb_hid_gamepad_press(uint8_t control, uint8_t value);
+bool usb_hid_gamepad_release(uint8_t control);
+bool usb_hid_gamepad_tap(uint8_t control, uint8_t value);
+/** @brief Neutralize all gamepad controls and send a centered report. */
+bool usb_hid_gamepad_release_all(void);
+
 /** @brief Dispatch a high-level key action produced by the key engine. */
 void usb_hid_dispatch_action(const key_action_t *action);
 

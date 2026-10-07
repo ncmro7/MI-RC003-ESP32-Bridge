@@ -87,6 +87,37 @@ extern "C" {
 #define USB_MOUSE_BTN_BACK      0x08    // Back (side button)
 #define USB_MOUSE_BTN_FORWARD   0x10    // Forward (side button)
 
+// ==========================================
+// 6. Virtual Xbox-layout Gamepad Controls
+//
+// These are model-independent "logical controls" decoded by hid_bridge into
+// the USB HID gamepad report. They are stored in a key action's `key_code`
+// field; the action's `consumer_code` carries the analog magnitude
+// (0 = use the control's default).
+// ==========================================
+typedef enum {
+    GP_NONE = 0,
+    // Face buttons
+    GP_A, GP_B, GP_X, GP_Y,
+    // Bumpers (shoulder) and analog triggers
+    GP_LB, GP_RB, GP_LT, GP_RT,
+    // Menu buttons
+    GP_SELECT, GP_START, GP_GUIDE, GP_SHARE,
+    // Analog stick presses (L3 / R3)
+    GP_L3, GP_R3,
+    // Directional pad
+    GP_DPAD_UP, GP_DPAD_DOWN, GP_DPAD_LEFT, GP_DPAD_RIGHT,
+    // Left analog stick directions
+    GP_LS_UP, GP_LS_DOWN, GP_LS_LEFT, GP_LS_RIGHT,
+    // Right analog stick directions
+    GP_RS_UP, GP_RS_DOWN, GP_RS_LEFT, GP_RS_RIGHT,
+    GP_CONTROL_COUNT
+} gamepad_control_t;
+
+// Default magnitudes used when an action's value is 0.
+#define GP_STICK_DEFAULT    127     // analog stick full deflection (-127..127)
+#define GP_TRIGGER_DEFAULT  255     // trigger full pull (0..255)
+
 #ifdef __cplusplus
 }
 #endif

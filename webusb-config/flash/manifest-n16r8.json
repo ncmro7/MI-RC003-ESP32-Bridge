@@ -1,13 +1,14 @@
 {
     "name":  "MI-RC003 Bridge N16R8",
-    "version":  "1.3.3",
+    "version":  "1.4.1",
+    "build":  "022f705b5725",
     "new_install_prompt_erase":  true,
     "builds":  [
                    {
                        "chipFamily":  "ESP32-S3",
                        "parts":  [
                                      {
-                                         "path":  "firmware/merged-flash-n16r8.bin",
+                                         "path":  "firmware/merged-flash-n16r8.bin?v=022f705b5725",
                                          "offset":  0
                                      }
                                  ]

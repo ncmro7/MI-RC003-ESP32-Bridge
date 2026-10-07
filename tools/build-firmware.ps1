@@ -75,15 +75,12 @@ try {
         $mergedBins[$prof] = $merged
     }
 
-    $legacySource = if ($mergedBins.Contains($Script:DefaultProfile)) { $mergedBins[$Script:DefaultProfile] } else { @($mergedBins.Values)[0] }
-    Copy-Item $legacySource (Join-Path $Script:BuildDir 'merged-flash.bin') -Force
-
     New-WebFlashFiles -Version $version -MergedBins $mergedBins
     Write-Ok ('网页烧录固件目录: ' + (Join-Path $Script:WebFlashDir 'firmware'))
     Write-Ok ('网页 manifest / boards: ' + $Script:WebFlashDir)
 
     Write-Title '完成'
-    Write-Host ('  Windows 烧录工具固件: build\firmware\merged-flash-<profile>.bin（默认: build\merged-flash.bin）') -ForegroundColor DarkGray
+    Write-Host ('  Windows 烧录工具固件: build\firmware\merged-flash-<profile>.bin') -ForegroundColor DarkGray
     Write-Host ('  网页烧录固件:         webusb-config\flash\firmware\merged-flash-<profile>.bin') -ForegroundColor DarkGray
     Write-Host ''
     Write-Host '下一步: 运行 package-release.bat 打包 Windows 免安装烧录工具。' -ForegroundColor Cyan

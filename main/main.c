@@ -8,6 +8,7 @@
 #include "audio/audio_pipeline.h"
 #include "keymap/key_state_machine.h"
 #include "keymap/key_config_storage.h"
+#include "remote/remote_profile.h"
 #include "usb/usb_composite.h"
 #include "usb/hid_bridge.h"
 #include "ble/ble_remote_client.h"
@@ -39,6 +40,10 @@ void app_main(void)
 {
     // 1. Persistent storage (NVS with auto-recovery).
     ESP_ERROR_CHECK(config_store_init());
+
+    // Select the remote profile (model-independent key normalization) before
+    // the key engine starts consuming canonical key codes.
+    remote_profile_init();
 
     // 2. Logging + on-board RGB LED.
     app_log_init();

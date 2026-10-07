@@ -1,5 +1,6 @@
 #include "key_state_machine.h"
 #include "app_config.h"
+#include "remote/remote_profile.h"
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -52,36 +53,30 @@ void key_engine_unlock(void)
 extern void app_log(const char *tag, const char *format, ...);
 extern void led_indicator_set_layer_color(uint32_t rgb_color);
 
+// The physical key map is provided by the active remote profile, so the engine
+// stays model-independent (see remote/remote_profile.c).
 static int get_physical_key_slot(uint8_t raw_key)
 {
-    switch (raw_key) {
-        case MI_KEY_POWER: case MI_KEY_POWER_ALT: return 0;
-        case MI_KEY_VOICE: case MI_KEY_VOICE_ALT: return 1;
-        case MI_KEY_UP:    return 2;
-        case MI_KEY_DOWN:  return 3;
-        case MI_KEY_LEFT:  return 4;
-        case MI_KEY_RIGHT: return 5;
-        case MI_KEY_OK:    return 6;
-        case MI_KEY_BACK:  return 7;
-        case MI_KEY_HOME: case MI_KEY_HOME_ALT: return 8;
-        case MI_KEY_MENU: case MI_KEY_MENU_ALT: return 9;
-        case MI_KEY_VOL_UP:   return 10;
-        case MI_KEY_VOL_DOWN: return 11;
-        case MI_KEY_TV: case MI_KEY_TV_ALT: return 12;
-        default: return -1;
-    }
+    return remote_profile_slot(raw_key);
 }
 
 static uint8_t canonical_source_vk(uint8_t raw_key)
 {
-    switch (raw_key) {
-        case MI_KEY_POWER_ALT: return MI_KEY_POWER;
-        case MI_KEY_VOICE_ALT: return MI_KEY_VOICE;
-        case MI_KEY_HOME_ALT:  return MI_KEY_HOME;
-        case MI_KEY_MENU_ALT:  return MI_KEY_MENU;
-        case MI_KEY_TV_ALT:    return MI_KEY_TV;
-        default: return raw_key;
-    }
+    return remote_profile_canonical(raw_key);
+}
+
+// Number of engine slots in use for the active profile (bounded by the
+// per-layout binding capacity).
+static size_t active_slot_count(void)
+{
+    size_t n = remote_profile_key_count();
+    return n > MAX_KEY_BINDINGS ? MAX_KEY_BINDINGS : n;
+}
+
+static uint8_t slot_raw_key(size_t slot)
+{
+    const remote_key_desc_t *kd = remote_profile_key_at(slot);
+    return kd ? kd->code : 0;
 }
 
 // Look up the target configuration for a key in the global switch map.
@@ -199,7 +194,8 @@ static void emit_action(key_mapper_engine_t *engine, const key_action_t *action,
             action->type == ACTION_KEYBOARD_RELEASE || action->type == ACTION_CONSUMER_RELEASE ||
             action->type == ACTION_VOICE_RELEASE ||
             action->type == ACTION_MOUSE_BUTTON_TAP || action->type == ACTION_MOUSE_BUTTON_RELEASE ||
-            action->type == ACTION_MOUSE_MOVE || action->type == ACTION_MOUSE_WHEEL) {
+            action->type == ACTION_MOUSE_MOVE || action->type == ACTION_MOUSE_WHEEL ||
+            action->type == ACTION_GAMEPAD_TAP || action->type == ACTION_GAMEPAD_RELEASE) {
             key_engine_switch_layer(engine, 0, engine->last_telemetry.timestamp);
         }
     }
@@ -216,6 +212,9 @@ static void emit_action_as_tap_if_hold(key_mapper_engine_t *engine, const key_ac
         emit_action(engine, &tap, source_vk, false);
     } else if (action->type == ACTION_MOUSE_BUTTON_HOLD) {
         key_action_t tap = { ACTION_MOUSE_BUTTON_TAP, 0, action->key_code, 0, 0, 0, 0, 0 };
+        emit_action(engine, &tap, source_vk, false);
+    } else if (action->type == ACTION_GAMEPAD_HOLD) {
+        key_action_t tap = { ACTION_GAMEPAD_TAP, 0, action->key_code, action->consumer_code, 0, 0, 0, 0 };
         emit_action(engine, &tap, source_vk, false);
     } else {
         emit_action(engine, action, source_vk, false);
@@ -669,12 +668,14 @@ void key_engine_feed_key(key_mapper_engine_t *engine, uint8_t raw_key_code, bool
                     b.click_action.type == ACTION_VOICE_HOLD ||
                     b.click_action.type == ACTION_SWITCH_LAYER ||
                     b.click_action.type == ACTION_MOUSE_BUTTON_HOLD ||
-                    b.click_action.type == ACTION_MOUSE_WHEEL) {
+                    b.click_action.type == ACTION_MOUSE_WHEEL ||
+                    b.click_action.type == ACTION_GAMEPAD_HOLD) {
                     emit_action(engine, &b.click_action, raw_key_code, true);
                 } else if (b.has_click &&
                            (b.click_action.type == ACTION_KEYBOARD_TAP ||
                             b.click_action.type == ACTION_CONSUMER_TAP ||
                             b.click_action.type == ACTION_MOUSE_BUTTON_TAP ||
+                            b.click_action.type == ACTION_GAMEPAD_TAP ||
                             b.click_action.type == ACTION_ENTER_SWITCH_MODE)) {
                     // Click mappings fire immediately on press so the host
                     // reacts without waiting for the key-up. The release branch
@@ -705,6 +706,9 @@ void key_engine_feed_key(key_mapper_engine_t *engine, uint8_t raw_key_code, bool
                 } else if (b.click_action.type == ACTION_MOUSE_BUTTON_HOLD) {
                     key_action_t rel = { ACTION_MOUSE_BUTTON_RELEASE, 0, b.click_action.key_code, 0, 0, 0, 0, 0 };
                     emit_action(engine, &rel, raw_key_code, false);
+                } else if (b.click_action.type == ACTION_GAMEPAD_HOLD) {
+                    key_action_t rel = { ACTION_GAMEPAD_RELEASE, 0, b.click_action.key_code, 0, 0, 0, 0, 0 };
+                    emit_action(engine, &rel, raw_key_code, false);
                 } else if (b.has_click &&
                            (b.click_action.type == ACTION_KEYBOARD_RELEASE ||
                             b.click_action.type == ACTION_CONSUMER_RELEASE)) {
@@ -723,6 +727,9 @@ void key_engine_feed_key(key_mapper_engine_t *engine, uint8_t raw_key_code, bool
                         emit_action(engine, &rel, raw_key_code, false);
                     } else if (b.long_action.type == ACTION_MOUSE_BUTTON_HOLD) {
                         key_action_t rel = { ACTION_MOUSE_BUTTON_RELEASE, 0, b.long_action.key_code, 0, 0, 0, 0, 0 };
+                        emit_action(engine, &rel, raw_key_code, false);
+                    } else if (b.long_action.type == ACTION_GAMEPAD_HOLD) {
+                        key_action_t rel = { ACTION_GAMEPAD_RELEASE, 0, b.long_action.key_code, 0, 0, 0, 0, 0 };
                         emit_action(engine, &rel, raw_key_code, false);
                     }
                 } else if (b.has_click || b.has_double) {
@@ -770,17 +777,13 @@ void key_engine_tick(key_mapper_engine_t *engine, uint32_t now_ms)
         }
     }
 
-    uint8_t raw_keys[] = {
-        MI_KEY_POWER, MI_KEY_VOICE, MI_KEY_UP, MI_KEY_DOWN,
-        MI_KEY_LEFT, MI_KEY_RIGHT, MI_KEY_OK, MI_KEY_BACK,
-        MI_KEY_HOME, MI_KEY_MENU, MI_KEY_VOL_UP, MI_KEY_VOL_DOWN, MI_KEY_TV
-    };
-
-    for (int slot = 0; slot < 13; slot++) {
+    size_t slot_count = active_slot_count();
+    for (size_t slot = 0; slot < slot_count; slot++) {
         key_slot_state_t *s = &engine->states[slot];
         if (!s->is_pressed && !s->waiting_double) continue;
 
-        uint8_t raw_key = raw_keys[slot];
+        uint8_t raw_key = slot_raw_key(slot);
+        if (!raw_key) continue;
         key_binding_t b;
         get_effective_binding(engine, raw_key, &b);
 
@@ -812,17 +815,13 @@ void key_engine_tick(key_mapper_engine_t *engine, uint32_t now_ms)
 
 uint8_t key_engine_get_pressed_vk(const key_mapper_engine_t *engine)
 {
-    static const uint8_t raw_keys[] = {
-        MI_KEY_POWER, MI_KEY_VOICE, MI_KEY_UP, MI_KEY_DOWN,
-        MI_KEY_LEFT, MI_KEY_RIGHT, MI_KEY_OK, MI_KEY_BACK,
-        MI_KEY_HOME, MI_KEY_MENU, MI_KEY_VOL_UP, MI_KEY_VOL_DOWN, MI_KEY_TV
-    };
     uint8_t vk = 0;
     if (!engine) return 0;
     key_engine_lock();
-    for (int slot = 0; slot < 13; slot++) {
+    size_t slot_count = active_slot_count();
+    for (size_t slot = 0; slot < slot_count; slot++) {
         if (engine->states[slot].is_pressed) {
-            vk = raw_keys[slot];
+            vk = slot_raw_key(slot);
             break;
         }
     }
@@ -835,16 +834,14 @@ void key_engine_release_all(key_mapper_engine_t *engine, uint32_t now_ms)
     if (!engine) return;
     key_engine_lock();
 
-    uint8_t raw_keys[] = {
-        MI_KEY_POWER, MI_KEY_VOICE, MI_KEY_UP, MI_KEY_DOWN,
-        MI_KEY_LEFT, MI_KEY_RIGHT, MI_KEY_OK, MI_KEY_BACK,
-        MI_KEY_HOME, MI_KEY_MENU, MI_KEY_VOL_UP, MI_KEY_VOL_DOWN, MI_KEY_TV
-    };
-
-    for (int slot = 0; slot < 13; slot++) {
+    size_t slot_count = active_slot_count();
+    for (size_t slot = 0; slot < MAX_KEY_BINDINGS; slot++) {
         key_slot_state_t *s = &engine->states[slot];
-        if (s->is_pressed) {
-            key_engine_feed_key(engine, raw_keys[slot], false, now_ms);
+        if (s->is_pressed && slot < slot_count) {
+            uint8_t raw_key = slot_raw_key(slot);
+            if (raw_key) {
+                key_engine_feed_key(engine, raw_key, false, now_ms);
+            }
         }
         s->waiting_double = false;
         s->press_count = 0;

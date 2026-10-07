@@ -4,6 +4,7 @@
 #include "audio/audio_pipeline.h"
 #include "keymap/key_state_machine.h"
 #include "led/led_indicator.h"
+#include "remote/remote_profile.h"
 #include "storage/config_store.h"
 #include "usb/hid_bridge.h"
 
@@ -808,6 +809,35 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             app_log("BLE", "MTU updated: %u", event->mtu.value);
             break;
 
+        case BLE_GAP_EVENT_L2CAP_UPDATE_REQ: {
+            // The remote asks for a large slave latency (skips connection
+            // events to save power), which delays HID notifications by up to
+            // ~1 s. Refuse it so the link keeps the low-latency connect
+            // parameters (latency = 0).
+            const struct ble_gap_upd_params *pp = event->conn_update_req.peer_params;
+            if (pp && pp->latency != 0) {
+                app_log("BLE", "Reject peer conn params (latency=%u) to stay responsive",
+                        pp->latency);
+                return BLE_HS_EREJECT;
+            }
+            break;
+        }
+
+        case BLE_GAP_EVENT_CONN_UPDATE_REQ: {
+            // Link-layer parameter request: counter-propose latency = 0.
+            struct ble_gap_upd_params *sp = event->conn_update_req.self_params;
+            if (sp) {
+                sp->latency = 0;
+                if (sp->itvl_min < 6) sp->itvl_min = 6;
+                if (sp->itvl_max > 12) sp->itvl_max = 12;
+                if (sp->supervision_timeout < 400) sp->supervision_timeout = 400;
+                sp->min_ce_len = 0;
+                sp->max_ce_len = 0;
+            }
+            app_log("BLE", "Clamp conn param req -> latency=0");
+            break;
+        }
+
         case BLE_GAP_EVENT_CONN_UPDATE: {
             struct ble_gap_conn_desc udesc;
             if (ble_gap_conn_find(event->conn_update.conn_handle, &udesc) == 0) {
@@ -988,6 +1018,8 @@ void ble_remote_task(void)
             strncpy(s_connected_mac, s_pending_mac, sizeof(s_connected_mac) - 1);
             strncpy(s_connected_name, s_pending_name[0] ? s_pending_name : "Xiaomi Voice Remote",
                     sizeof(s_connected_name) - 1);
+            // Pick the matching remote profile for this model, if any.
+            remote_profile_autodetect(s_connected_name);
             do_connect_addr(&addr);
         }
     }

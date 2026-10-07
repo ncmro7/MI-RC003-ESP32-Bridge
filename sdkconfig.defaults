@@ -41,6 +41,8 @@ CONFIG_BT_NIMBLE_HS_FLOW_CTRL_ITVL=1000
 CONFIG_BT_NIMBLE_HS_FLOW_CTRL_THRESH=2
 
 # ---- TinyUSB composite device --------------------------------------------
+# 1 HID interface (keyboard/consumer/mouse). The gamepad is a custom XUSB
+# (XInput) class driver, not a HID instance.
 CONFIG_TINYUSB_HID_COUNT=1
 CONFIG_TINYUSB_CDC_ENABLED=n
 CONFIG_TINYUSB_VENDOR_COUNT=1

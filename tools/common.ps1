@@ -211,6 +211,13 @@ function Copy-BinFile([string]$Source, [string]$Destination) {
     Copy-Item $src $Destination -Force
 }
 
+# Content hash used to bust HTTP caches: the firmware path in the manifest
+# carries a "?v=<hash>" query so a rebuilt (but same-named) firmware is always
+# re-downloaded instead of served from the browser/CDN cache.
+function Get-FirmwareBuildId([string]$Path) {
+    return (Get-FileHash $Path -Algorithm SHA256).Hash.Substring(0, 12).ToLower()
+}
+
 function New-WebFlashFiles([string]$Version, [System.Collections.IDictionary]$MergedBins) {
     $fwDir = Join-Path $Script:WebFlashDir 'firmware'
     New-Item -ItemType Directory -Force -Path $fwDir | Out-Null
@@ -223,16 +230,18 @@ function New-WebFlashFiles([string]$Version, [System.Collections.IDictionary]$Me
         $info = Get-ProfileInfo $prof
         $binName = 'merged-flash-' + $prof + '.bin'
         Copy-BinFile $MergedBins[$prof] (Join-Path $fwDir $binName)
+        $buildId = Get-FirmwareBuildId $MergedBins[$prof]
 
         $manifest = [ordered]@{
             name                     = 'MI-RC003 Bridge ' + $info.Label
             version                  = $Version
+            build                    = $buildId
             new_install_prompt_erase = $true
             builds                   = @(
                 [ordered]@{
                     chipFamily = 'ESP32-S3'
                     parts      = @(
-                        [ordered]@{ path = 'firmware/' + $binName; offset = 0 }
+                        [ordered]@{ path = ('firmware/' + $binName + '?v=' + $buildId); offset = 0 }
                     )
                 }
             )
@@ -244,27 +253,12 @@ function New-WebFlashFiles([string]$Version, [System.Collections.IDictionary]$Me
             label    = $info.Label
             flash    = $info.Flash
             psram    = $info.Psram
+            build    = $buildId
             manifest = 'manifest-' + $prof + '.json'
         }
     }
 
     $primary = $profiles[0]
-    Copy-BinFile $MergedBins[$primary] (Join-Path $fwDir 'merged-flash.bin')
-    $primaryInfo = Get-ProfileInfo $primary
-    $defaultManifest = [ordered]@{
-        name                     = 'MI-RC003 Bridge ' + $primaryInfo.Label
-        version                  = $Version
-        new_install_prompt_erase = $true
-        builds                   = @(
-            [ordered]@{
-                chipFamily = 'ESP32-S3'
-                parts      = @(
-                    [ordered]@{ path = 'firmware/merged-flash.bin'; offset = 0 }
-                )
-            }
-        )
-    }
-    Write-JsonFile (Join-Path $Script:WebFlashDir 'manifest.json') $defaultManifest
 
     Write-JsonFile (Join-Path $Script:WebFlashDir 'boards.json') ([ordered]@{
         version        = $Version

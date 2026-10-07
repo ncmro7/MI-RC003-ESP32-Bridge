@@ -14,7 +14,9 @@
 
   const dev = new MiRC003();
   const ACTION = MiRC003.ACTION;
-  const PHYSICAL_KEYS = MiRC003.PHYSICAL_KEYS;
+  // Physical keys come from the device's active remote profile (see
+  // dev.remoteInfo()); this default list is used until the device is read.
+  let PHYSICAL_KEYS = MiRC003.PHYSICAL_KEYS;
   const MOD_BITS = MiRC003.MOD_BITS;
   const MOD_NAMES = {};
   MOD_BITS.forEach(([bit, name]) => { MOD_NAMES[bit] = name; });
@@ -22,7 +24,15 @@
   const HID_GROUPS = MiRC003.HID_GROUPS;
   const HID_EXTRA_GROUPS = MiRC003.HID_EXTRA_GROUPS;
   const CONSUMER_GROUPS = MiRC003.CONSUMER_GROUPS;
+  const GAMEPAD_CONTROLS = MiRC003.GAMEPAD_CONTROLS;
+  const gamepadName = MiRC003.gamepadName;
   const Keymap = MiRC003.Keymap;
+
+  // Remote profile state (multi-remote adaptation). The default is shown
+  // before the device is read (or on firmware without REMOTE_INFO support).
+  let remoteProfiles = [];
+  let activeRemoteProfile = null;
+  const DEFAULT_REMOTE_MODEL = { id: "rc003", name: "MIRC 2 Pro" };
 
   const ICON = {
     power: '<svg viewBox="0 0 24 24"><path d="M12 3v9M7.05 5.93a8 8 0 1 0 9.9 0"/></svg>',
@@ -57,6 +67,7 @@
     $("conn-text").textContent = on ? "已连接" : "未连接";
     $("btn-connect").disabled = on;
     $("btn-disconnect").disabled = !on;
+    renderRemoteSelector();
   }
 
   function formatUptime(sec) {
@@ -97,6 +108,7 @@
       setConnected(true);
       toast("设备已连接");
       await loadDeviceInfo();
+      await loadRemoteInfo();
       await refreshStatus();
       await loadKeymap();
       await refreshBleInfo();
@@ -120,6 +132,33 @@
     try {
       $("device-info").textContent = JSON.stringify(await dev.deviceInfo(), null, 2);
     } catch (e) { /* ignore */ }
+  }
+
+  /* ------------------------- remote profile ------------------------- */
+
+  async function loadRemoteInfo() {
+    try {
+      const info = await dev.remoteInfo();
+      remoteProfiles = info.profiles || [];
+      activeRemoteProfile = info.active || null;
+      if (Array.isArray(info.keys) && info.keys.length) {
+        PHYSICAL_KEYS = info.keys.map((k) => ({ vk: k.vk, name: k.name }));
+      }
+    } catch (e) { /* firmware without REMOTE_INFO support */ }
+    renderRemoteSelector();
+  }
+
+  function renderRemoteSelector() {
+    const sel = $("remote-profile");
+    if (!sel) return;
+    // Never leave the selector blank: fall back to the default model when the
+    // device has not been read yet (or predates the REMOTE_INFO command).
+    const list = remoteProfiles.length ? remoteProfiles : [DEFAULT_REMOTE_MODEL];
+    const active = activeRemoteProfile || list[0].id;
+    sel.innerHTML = list.map((p) =>
+      `<option value="${escapeHtml(p.id)}" ${p.id === active ? "selected" : ""}>${escapeHtml(p.name)}</option>`
+    ).join("");
+    sel.disabled = !dev.isConnected() || list.length <= 1;
   }
 
   async function refreshStatus() {
@@ -399,6 +438,11 @@
       return `${text} (${dir}${spd ? " 速度" + spd : ""})`;
     }
     if (type === 15) return `${text} (${b[prefix + "_wheel"] || 0})`;
+    if (type === 17 || type === 18) {
+      const name = gamepadName(b[prefix + "_key"] || 0);
+      const val = b[prefix + "_cons"] || 0;
+      return val ? `${text} (${name} ${val})` : `${text} (${name})`;
+    }
     return text;
   }
 
@@ -420,6 +464,9 @@
   }
   function bindBtn(btn, layer, vk) {
     const pk = pkOf(vk);
+    // The active remote profile may not expose every key of the RC003 layout
+    // (multi-remote support): hide the ones it lacks instead of failing.
+    if (!pk) { btn.disabled = true; btn.classList.add("hidden"); return btn; }
     btn.dataset.vk = String(vk);
     const show = () => {
       const el = $("remote-info");
@@ -637,6 +684,23 @@
       { label: "滚轮↑", type: 15, wheel: 3 },
       { label: "滚轮↓", type: 15, wheel: -3 },
     ]},
+    { g: "手柄", items: [
+      { label: "A", type: 17, gp: 1 },
+      { label: "B", type: 17, gp: 2 },
+      { label: "X", type: 17, gp: 3 },
+      { label: "Y", type: 17, gp: 4 },
+      { label: "LB", type: 17, gp: 5 },
+      { label: "RB", type: 17, gp: 6 },
+      { label: "LT", type: 17, gp: 7 },
+      { label: "RT", type: 17, gp: 8 },
+      { label: "Select", type: 17, gp: 9 },
+      { label: "Start", type: 17, gp: 10 },
+      { label: "Xbox", type: 17, gp: 11 },
+      { label: "方向键 上", type: 17, gp: 15 },
+      { label: "方向键 下", type: 17, gp: 16 },
+      { label: "方向键 左", type: 17, gp: 17 },
+      { label: "方向键 右", type: 17, gp: 18 },
+    ]},
     { g: "配置", items: [
       { label: "进入配置切换模式", type: 16 },
     ]},
@@ -685,6 +749,8 @@
     if (p.key != null) { setPickerKey(block, "f-key", p.key); }
     if (p.cons != null) { setPickerKey(block, "f-cons", p.cons); }
     if (p.mouseBtn != null) set(".f-mousebtn", p.mouseBtn);
+    if (p.gp != null) set(".f-gp-control", p.gp);
+    if (p.gpValue != null) set(".f-gp-value", p.gpValue);
     if (p.dir != null) { set(".f-move-dir", p.dir); set(".f-move-speed", p.speed ?? 8); }
     if (p.wheel != null) {
       set(".f-wheel-dir", p.wheel < 0 ? "down" : "up");
@@ -741,12 +807,37 @@
     if (sel) sel.value = String(val);
   }
 
-  function actionTypeOptions(selected) {
-    // Mouse-button release (13) is internal-only and not user-selectable.
-    // Layer switching (9) was replaced by the modal switch mode (16).
-    const allowed = [0, 1, 2, 4, 7, 10, 11, 12, 14, 15, 16];
-    return allowed.map((t) => `<option value="${t}" ${t === selected ? "selected" : ""}>${ACTION[t]}</option>`).join("");
+  // Action types grouped by function for the multi-level (optgroup) menu.
+  // Mouse-button release (13) is internal-only; layer switching (9) was
+  // replaced by the modal switch mode (16).
+  const ACTION_GROUPS = [
+    { label: "",      items: [[0, "无"]] },
+    { label: "键盘",   items: [[1, "单击"], [2, "按住"]] },
+    { label: "多媒体", items: [[4, "单击"], [5, "按住"]] },
+    { label: "鼠标",   items: [[11, "按键-单击"], [12, "按键-按住"], [14, "移动"], [15, "滚轮"]] },
+    { label: "游戏手柄", items: [[17, "单击"], [18, "按住"]] },
+    { label: "语音",   items: [[7, "按住说话"]] },
+    { label: "系统",   items: [[16, "进入配置切换模式"], [10, "穿透继承"]] },
+  ];
+
+  // "按住" (hold) action types: keep the key pressed while the physical key is
+  // held. Mutually exclusive with the "长按" gesture.
+  const HOLD_TYPES = new Set([2, 5, 12, 18]);
+
+  function actionTypeOptions(selected, allowHold = true) {
+    return ACTION_GROUPS.map((grp) => {
+      const opts = grp.items
+        .filter(([t]) => allowHold || !HOLD_TYPES.has(t))
+        .map(([t, name]) =>
+          `<option value="${t}" ${t === selected ? "selected" : ""}>${name}</option>`).join("");
+      return opts ? (grp.label ? `<optgroup label="${grp.label}">${opts}</optgroup>` : opts) : "";
+    }).join("");
   }
+
+  // Gamepad controls that carry an analog value (0-255): shoulder/trigger and
+  // stick directions. Plain buttons (A/B/X/Y/Select/Start/Xbox/DPad/L3/R3)
+  // have no magnitude.
+  const GAMEPAD_ANALOG = new Set([5, 6, 7, 8, 19, 20, 21, 22, 23, 24, 25, 26]);
 
   // ---- Visual keyboard layout for HID key picker ----
   // Full-size 104-key ANSI layout drawn on a 92-column grid (4 columns per
@@ -891,6 +982,19 @@
     ).join("");
     const mouseButtonOptions = MOUSE_BUTTONS.map(([v, n]) =>
       `<option value="${v}" ${v === key ? "selected" : ""}>${n}</option>`).join("");
+    // Gamepad control groups (used when the action type is a gamepad one).
+    const gpControl = b[prefix + "_key"] ?? 0;
+    const gpValue = b[prefix + "_cons"] ?? 0;
+    const gpGroupOrder = [];
+    const gpGroupMap = {};
+    GAMEPAD_CONTROLS.forEach((c) => {
+      if (!gpGroupMap[c.group]) { gpGroupMap[c.group] = []; gpGroupOrder.push(c.group); }
+      gpGroupMap[c.group].push(c);
+    });
+    const gamepadOptions = gpGroupOrder.map((g) =>
+      `<optgroup label="${g}">` + gpGroupMap[g].map((c) =>
+        `<option value="${c.id}" ${c.id === gpControl ? "selected" : ""}>${c.name}</option>`).join("") + `</optgroup>`
+    ).join("");
     const modChecks = MOD_BITS.map(([bit, name]) =>
       `<label class="check"><input type="checkbox" class="f-mod" value="${bit}" ${(mod & bit) ? "checked" : ""}/>${name}</label>`
     ).join("");
@@ -910,7 +1014,7 @@
           ${prefix !== "click" ? `<label class="check" style="float:right"><input type="checkbox" class="f-has" ${has}/> 启用</label>` : ""}
         </h4>
         <div class="inline">
-          <div class="field"><label>动作类型</label><select class="f-type">${actionTypeOptions(type)}</select></div>
+          <div class="field"><label>动作类型</label><select class="f-type">${actionTypeOptions(type, prefix !== "long" && !b.has_long)}</select></div>
           ${prefix !== "click" ? `<div class="field"><label>触发时间 (ms)</label><input type="number" class="f-ms" value="${ms}" min="50" max="3000"/></div>` : ""}
         </div>
         <div class="f-voice">
@@ -962,6 +1066,13 @@
           </div>
           <p class="hint">按下按键时按此方向滚动一次；格数越大滚动越多。</p>
         </div>
+        <div class="f-gamepad">
+          <div class="inline">
+            <div class="field"><label>手柄按键</label><select class="f-gp-control">${gamepadOptions}</select></div>
+            <div class="field f-gp-mag"><label>幅度 (0-255)</label><input type="number" class="f-gp-value" value="${gpValue || 255}" min="0" max="255"/></div>
+          </div>
+          <p class="hint">映射到虚拟 Xbox 360 手柄（XInput）：左/右摇杆为模拟量，LT/RT 为左/右扳机（模拟量 0-255），方向键即十字键，另含 A/B/X/Y、LB/RB、View/Back、Menu/Start、Xbox(Guide)、L3/R3（摇杆按下）、截屏键。摇杆与扳机可设幅度 0-255（默认 255），普通按钮无幅度；摇杆方向建议用「手柄-按住」（按住期间持续偏转），按钮用「手柄-单击」。</p>
+        </div>
       </div>`;
   }
 
@@ -982,7 +1093,47 @@
       block.querySelector(".f-mouse").style.display = (type === 11 || type === 12) ? "block" : "none";
       block.querySelector(".f-move").style.display = (type === 14) ? "block" : "none";
       block.querySelector(".f-wheel").style.display = (type === 15) ? "block" : "none";
+      const gp = block.querySelector(".f-gamepad");
+      if (gp) gp.style.display = (type === 17 || type === 18) ? "block" : "none";
+      // The magnitude field only applies to analog controls (sticks, and
+      // shoulder/trigger); plain buttons have no magnitude.
+      const gpCtrl = block.querySelector(".f-gp-control");
+      const magField = block.querySelector(".f-gp-mag");
+      if (magField && gpCtrl) {
+        magField.style.display = GAMEPAD_ANALOG.has(parseInt(gpCtrl.value, 10)) ? "block" : "none";
+      }
     });
+  }
+
+  // Enforces the mutual exclusion between the "长按" gesture and the "按住"
+  // (hold) action type: a hold already keeps the key pressed while the physical
+  // key is held, so it cannot coexist with a long-press trigger.
+  function updateGestureExclusion() {
+    const blocks = document.querySelectorAll("#modal-body .action-block");
+    if (blocks.length < 3) return;
+    const clickSel = blocks[0].querySelector(".f-type");
+    const longHas = blocks[1].querySelector(".f-has");
+    const longType = parseInt(blocks[1].querySelector(".f-type")?.value || "0", 10);
+    const longTab = document.querySelector('#gesture-tabs .gesture-tab[data-gesture="1"]');
+
+    const clickHold = HOLD_TYPES.has(parseInt(clickSel?.value || "0", 10));
+    if (clickHold) {
+      if (longHas) longHas.checked = false;
+      if (longTab) longTab.classList.add("disabled");
+      if (editingGesture === 1) setGesture(0);
+    } else if (longTab) {
+      longTab.classList.remove("disabled");
+    }
+
+    if (clickSel) {
+      const longOn = !!(longHas && longHas.checked && longType !== 0);
+      Array.from(clickSel.querySelectorAll("option")).forEach((o) => {
+        o.disabled = longOn && HOLD_TYPES.has(parseInt(o.value, 10));
+      });
+      if (clickSel.selectedOptions[0] && clickSel.selectedOptions[0].disabled) {
+        clickSel.value = "1";
+      }
+    }
   }
 
   function readActionFields(block) {
@@ -1013,6 +1164,8 @@
       key: keyVal,
       cons: consVal,
       mouseBtn: parseInt(block.querySelector(".f-mousebtn")?.value || "0", 10),
+      gpControl: parseInt(block.querySelector(".f-gp-control")?.value || "0", 10),
+      gpValue: parseInt(block.querySelector(".f-gp-value")?.value || "0", 10),
       dx: mdx,
       dy: mdy,
       wheel: wheelDir === "down" ? -wheelAmount : wheelAmount,
@@ -1047,7 +1200,10 @@
     const configured = [!!b.has_click, !!b.has_long, !!b.has_double, !!b.has_repeat];
     document.querySelectorAll("#gesture-tabs .gesture-tab").forEach((t, i) => {
       if (configured[i]) t.classList.add("has-action");
-      t.onclick = () => setGesture(parseInt(t.dataset.gesture, 10));
+      t.onclick = () => {
+        if (t.classList.contains("disabled")) return;
+        setGesture(parseInt(t.dataset.gesture, 10));
+      };
     });
     renderPresets();
     // Wire the inline visual keyboard and the extended-keys dropdown so both
@@ -1093,6 +1249,7 @@
     $("modal").classList.remove("hidden");
     refreshFieldVisibility();
     setGesture(0);
+    updateGestureExclusion();
   }
 
   function applyEditor() {
@@ -1124,6 +1281,9 @@
         b[prefix + "_dy"] = cfg.dy;
       } else if (cfg.type === 15) {
         b[prefix + "_wheel"] = cfg.wheel;
+      } else if (cfg.type === 17 || cfg.type === 18) {
+        b[prefix + "_key"] = cfg.gpControl;
+        b[prefix + "_cons"] = cfg.gpValue;
       }
       if (prefix !== "click") b[prefix + "_ms"] = cfg.ms;
       if (!b["has_" + prefix]) {
@@ -1223,6 +1383,17 @@
     };
     $("btn-keymap-save").onclick = saveKeymap;
     $("btn-keymap-reset").onclick = resetKeymap;
+    const rpSel = $("remote-profile");
+    if (rpSel) rpSel.onchange = async () => {
+      if (!dev.isConnected()) { toast("请先连接设备", true); return; }
+      try {
+        await dev.setRemoteProfile(rpSel.value);
+        activeRemoteProfile = rpSel.value;
+        toast("已切换遥控器型号");
+        await loadRemoteInfo();
+        await loadKeymap();
+      } catch (e) { toast(e.message, true); }
+    };
     $("btn-keymap-activate").onclick = async () => {
       try {
         await dev.setLayer(activeLayer);
@@ -1266,6 +1437,8 @@
 
     $("modal-close").onclick = $("modal-cancel").onclick = () => $("modal").classList.add("hidden");
     $("modal-apply").onclick = applyEditor;
+    const modalApplyTop = $("modal-apply-keys");
+    if (modalApplyTop) modalApplyTop.onclick = applyEditor;
     $("modal-clear").onclick = () => {
       const layer = getLayer(activeLayer);
       if (layer) layer.bindings = (layer.bindings || []).filter((x) => x.source_vk !== editingKey.vk);
@@ -1276,7 +1449,21 @@
       toast("已清除该按键，点击「保存到设备」生效");
     };
     document.addEventListener("change", (e) => {
-      if (e.target.classList.contains("f-type")) refreshFieldVisibility();
+      if (e.target.classList.contains("f-type")) {
+        refreshFieldVisibility();
+        updateGestureExclusion();
+      }
+      if (e.target.classList.contains("f-has")) updateGestureExclusion();
+      if (e.target.classList.contains("f-gp-control")) {
+        const block = e.target.closest(".action-block");
+        const mag = block && block.querySelector(".f-gp-value");
+        // Default the analog magnitude to full (255) when switching to a
+        // control that has one and no value was set yet.
+        if (mag && GAMEPAD_ANALOG.has(parseInt(e.target.value, 10)) && !(parseInt(mag.value, 10) > 0)) {
+          mag.value = "255";
+        }
+        refreshFieldVisibility();
+      }
     });
     document.addEventListener("click", () => {
       document.querySelectorAll(".switch-picker-menu").forEach((m) => m.classList.add("hidden"));

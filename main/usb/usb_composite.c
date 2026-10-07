@@ -2,6 +2,7 @@
 #include "usb_descriptors.h"
 #include "uac_microphone.h"
 #include "hid_bridge.h"
+#include "xusb_gamepad.h"
 #include "keymap/key_state_machine.h"
 #include "webusb_transport.h"
 #include "app_config.h"
@@ -27,6 +28,7 @@ static void usb_restore_hid_transport(void)
     usb_hid_keyboard_release();
     usb_hid_consumer_release();
     usb_hid_mouse_buttons_release();
+    usb_hid_gamepad_release_all();
 }
 
 static void usb_recovery_task(void *arg)
@@ -106,6 +108,7 @@ static void usb_event_cb(tinyusb_event_t *event, void *arg)
             usb_hid_keyboard_release();
             usb_hid_consumer_release();
             usb_hid_mouse_buttons_release();
+            usb_hid_gamepad_release_all();
             hid_bridge_set_transport_enabled(false);
             uac_microphone_stop_usb_stream();
             app_log("USB", "Host suspended the bus");
@@ -130,6 +133,7 @@ bool usb_composite_init(void)
     hid_bridge_init();
     webusb_transport_init();
     uac_microphone_init();
+    xusb_gamepad_init();
     usb_descriptors_init();
 
     if (xTaskCreatePinnedToCore(usb_recovery_task, "usb_recover", 3072, NULL,
@@ -154,7 +158,9 @@ bool usb_composite_init(void)
         return false;
     }
 
-    app_log("USB", "Composite device ready: UAC mic + HID + WebUSB");
+    app_log("USB", "Composite device ready: UAC mic + HID + WebUSB + XUSB gamepad");
+    app_log("USB", "HID reports: keyboard/consumer/mouse (report IDs 1-3, %u B descriptor)",
+            (unsigned)usb_hid_report_descriptor_len);
     return true;
 }
 
